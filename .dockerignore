@@ -1,0 +1,44 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+dist
+build
+
+# Virtual environments
+.venv
+venv
+env
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.idea
+.vscode
+
+# Testing
+.pytest_cache
+.mypy_cache
+.coverage
+htmlcov
+
+# Logs
+*.log
+
+# Docker files
+Dockerfile
+.dockerignore
+docker-compose.yaml
+
+# Temporary files
+*.tmp
+*.bak
