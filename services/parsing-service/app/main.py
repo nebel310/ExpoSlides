@@ -19,7 +19,7 @@ async def main() -> None:
         output,
         encoding="utf-8",
     )
-    print(output)
+    print("JSON сохранён в output.json")
 
 
 if __name__ == "__main__":

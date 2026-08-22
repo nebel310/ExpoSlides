@@ -9,8 +9,10 @@ from app.models.presentation import (
     BBox,
     ElementType,
     ImageElement,
+    LayoutInfo,
     LayoutType,
     Paragraph,
+    PlaceholderInfo,
     Presentation,
     Run,
     Slide,
@@ -38,22 +40,13 @@ class PPTXParser(BaseParser):
         """Синхронно извлекает структуру презентации"""
         prs = PPTXPresentation(str(path))
 
+        layouts: list[LayoutInfo] = []
+        for idx, layout in enumerate(prs.slide_layouts, start=1):
+            layouts.append(cls._parse_layout(layout, idx))
+
         slides: list[Slide] = []
         for idx, slide in enumerate(prs.slides, start=1):
-            elements: list[SlideElement] = []
-            for shape in slide.shapes:
-                elem = cls._parse_shape(shape)
-                if elem:
-                    elements.append(elem)
-
-            slides.append(
-                Slide(
-                    index=idx,
-                    layout_type=cls._classify_layout(slide),
-                    layout_name=slide.slide_layout.name if slide.slide_layout else None,
-                    elements=elements,
-                )
-            )
+            slides.append(cls._parse_slide(slide, idx))
 
         return Presentation(
             source_path=str(path),
@@ -61,6 +54,65 @@ class PPTXParser(BaseParser):
             slide_width=prs.slide_width,
             slide_height=prs.slide_height,
             slides=slides,
+            layouts=layouts,
+        )
+
+    @classmethod
+    def _parse_slide(cls, slide, index: int) -> Slide:
+        """Извлекает данные одного слайда"""
+        elements: list[SlideElement] = []
+        for shape in slide.shapes:
+            elem = cls._parse_shape(shape)
+            if elem:
+                elements.append(elem)
+
+        layout_index = None
+        if slide.slide_layout:
+            try:
+                layout_index = list(slide.slide_layout.part.package.presentation.slide_layouts).index(slide.slide_layout) + 1
+            except Exception:
+                pass
+
+        return Slide(
+            index=index,
+            layout_type=cls._classify_layout(slide),
+            layout_name=slide.slide_layout.name if slide.slide_layout else None,
+            layout_index=layout_index,
+            placeholder_type=cls._get_slide_placeholder_type(slide),
+            elements=elements,
+        )
+
+    @classmethod
+    def _parse_layout(cls, layout, index: int) -> LayoutInfo:
+        """Извлекает информацию о макете"""
+        elements: list[SlideElement] = []
+        placeholders: list[PlaceholderInfo] = []
+
+        for shape in layout.shapes:
+            elem = cls._parse_shape(shape)
+            if elem:
+                elements.append(elem)
+                if shape.is_placeholder:
+                    placeholders.append(
+                        PlaceholderInfo(
+                            placeholder_type=shape.placeholder_format.type.name,
+                            name=shape.name,
+                            idx=shape.placeholder_format.idx,
+                            bbox=BBox(
+                                left=shape.left,
+                                top=shape.top,
+                                width=shape.width,
+                                height=shape.height,
+                            ),
+                            element=elem,
+                        )
+                    )
+
+        return LayoutInfo(
+            name=layout.name,
+            index=index,
+            elements=elements,
+            placeholders=placeholders,
         )
 
     @classmethod
@@ -80,8 +132,12 @@ class PPTXParser(BaseParser):
             pass
 
         placeholder_type = None
+        placeholder_idx = None
+        placeholder_name = None
         if shape.is_placeholder:
             placeholder_type = shape.placeholder_format.type.name
+            placeholder_idx = shape.placeholder_format.idx
+            placeholder_name = shape.name
 
         if shape.has_table:
             table = cls._parse_table(shape.table)
@@ -91,6 +147,8 @@ class PPTXParser(BaseParser):
                 bbox=bbox,
                 z_order=z_order,
                 placeholder_type=placeholder_type,
+                placeholder_idx=placeholder_idx,
+                placeholder_name=placeholder_name,
                 table=table,
             )
 
@@ -102,6 +160,8 @@ class PPTXParser(BaseParser):
                 bbox=bbox,
                 z_order=z_order,
                 placeholder_type=placeholder_type,
+                placeholder_idx=placeholder_idx,
+                placeholder_name=placeholder_name,
                 text=text,
             )
 
@@ -117,6 +177,8 @@ class PPTXParser(BaseParser):
                 bbox=bbox,
                 z_order=z_order,
                 placeholder_type=placeholder_type,
+                placeholder_idx=placeholder_idx,
+                placeholder_name=placeholder_name,
                 image=image,
             )
 
@@ -126,6 +188,8 @@ class PPTXParser(BaseParser):
             bbox=bbox,
             z_order=z_order,
             placeholder_type=placeholder_type,
+            placeholder_idx=placeholder_idx,
+            placeholder_name=placeholder_name,
         )
 
     @classmethod
@@ -198,5 +262,42 @@ class PPTXParser(BaseParser):
 
     @classmethod
     def _classify_layout(cls, slide) -> LayoutType:
-        """Классифицирует макет слайда"""
+        """Классифицирует макет слайда по имени layout или placeholder"""
+        layout_name = slide.slide_layout.name.lower() if slide.slide_layout else ""
+
+        if "title slide" in layout_name or "титульный" in layout_name:
+            return LayoutType.TITLE
+        if "section header" in layout_name or "заголовок раздела" in layout_name:
+            return LayoutType.SECTION_HEADER
+        if "two content" in layout_name or "два содержимого" in layout_name:
+            return LayoutType.TWO_CONTENT
+        if "picture" in layout_name or "изображение" in layout_name:
+            return LayoutType.IMAGE_TEXT
+        if "table" in layout_name or "таблица" in layout_name:
+            return LayoutType.TABLE
+        if "thank you" in layout_name or "благодарность" in layout_name:
+            return LayoutType.THANK_YOU
+        if "title and content" in layout_name or "заголовок и содержимое" in layout_name:
+            return LayoutType.BULLETS
+        if "title only" in layout_name or "только заголовок" in layout_name:
+            return LayoutType.TITLE
+
+        # Эвристика по placeholder_type
+        placeholders = [sh for sh in slide.shapes if sh.is_placeholder]
+        types = [ph.placeholder_format.type.name for ph in placeholders]
+        if "TITLE" in types and ("BODY" in types or "CONTENT" in types):
+            return LayoutType.BULLETS
+        if "TITLE" in types and len(types) == 1:
+            return LayoutType.TITLE
+        if "PICTURE" in types:
+            return LayoutType.IMAGE_TEXT
+
         return LayoutType.UNKNOWN
+
+    @classmethod
+    def _get_slide_placeholder_type(cls, slide) -> str | None:
+        """Возвращает тип основного placeholder слайда"""
+        for shape in slide.shapes:
+            if shape.is_placeholder:
+                return shape.placeholder_format.type.name
+        return None
