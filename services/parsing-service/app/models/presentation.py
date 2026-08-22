@@ -110,6 +110,13 @@ class SlideElement(BaseModel):
     table: Optional[TableElement] = None
 
 
+class SlideBackground(BaseModel):
+    """Фон слайда или макета"""
+    fill_type: Optional[str] = None
+    color_hex: Optional[str] = None
+    image_path: Optional[str] = None
+
+
 class Slide(BaseModel):
     """Слайд презентации"""
     index: int
@@ -118,7 +125,8 @@ class Slide(BaseModel):
     layout_index: Optional[int] = None
     placeholder_type: Optional[str] = None
     elements: list[SlideElement] = Field(default_factory=list)
-    background: Optional[dict] = None
+    background: Optional[SlideBackground] = None
+    notes: Optional[str] = None
 
 
 class LayoutInfo(BaseModel):
@@ -127,6 +135,13 @@ class LayoutInfo(BaseModel):
     index: int
     elements: list[SlideElement] = Field(default_factory=list)
     placeholders: list[PlaceholderInfo] = Field(default_factory=list)
+    background: Optional[SlideBackground] = None
+
+
+class ThemeInfo(BaseModel):
+    """Тема презентации (цвета и шрифты)"""
+    colors: dict[str, str] = Field(default_factory=dict)
+    fonts: dict[str, str] = Field(default_factory=dict)
 
 
 class Presentation(BaseModel):
@@ -137,3 +152,4 @@ class Presentation(BaseModel):
     slide_height: int
     slides: list[Slide] = Field(default_factory=list)
     layouts: list[LayoutInfo] = Field(default_factory=list)
+    theme: Optional[ThemeInfo] = None

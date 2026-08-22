@@ -4,6 +4,8 @@ from pathlib import Path
 
 from pptx import Presentation as PPTXPresentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+from lxml import etree
 
 from app.models.presentation import (
     BBox,
@@ -16,10 +18,12 @@ from app.models.presentation import (
     Presentation,
     Run,
     Slide,
+    SlideBackground,
     SlideElement,
     TableElement,
     TextElement,
     TextStyle,
+    ThemeInfo,
 )
 from app.parsers.base import BaseParser
 
@@ -48,6 +52,8 @@ class PPTXParser(BaseParser):
         for idx, slide in enumerate(prs.slides, start=1):
             slides.append(cls._parse_slide(slide, idx))
 
+        theme = cls._extract_theme(prs)
+
         return Presentation(
             source_path=str(path),
             file_type="pptx",
@@ -55,6 +61,7 @@ class PPTXParser(BaseParser):
             slide_height=prs.slide_height,
             slides=slides,
             layouts=layouts,
+            theme=theme,
         )
 
     @classmethod
@@ -73,6 +80,12 @@ class PPTXParser(BaseParser):
             except Exception:
                 pass
 
+        background = cls._parse_background(slide.background)
+
+        notes = None
+        if slide.has_notes_slide:
+            notes = slide.notes_slide.notes_text_frame.text if slide.notes_slide.notes_text_frame else None
+
         return Slide(
             index=index,
             layout_type=cls._classify_layout(slide),
@@ -80,6 +93,8 @@ class PPTXParser(BaseParser):
             layout_index=layout_index,
             placeholder_type=cls._get_slide_placeholder_type(slide),
             elements=elements,
+            background=background,
+            notes=notes,
         )
 
     @classmethod
@@ -108,11 +123,14 @@ class PPTXParser(BaseParser):
                         )
                     )
 
+        background = cls._parse_background(layout.background)
+
         return LayoutInfo(
             name=layout.name,
             index=index,
             elements=elements,
             placeholders=placeholders,
+            background=background,
         )
 
     @classmethod
@@ -167,7 +185,7 @@ class PPTXParser(BaseParser):
 
         if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
             image = ImageElement(
-                image_path=str(shape.image.partname) if hasattr(shape, "image") else None,
+                image_path=getattr(shape.image, "filename", None),
                 content_type=shape.image.content_type if hasattr(shape, "image") else None,
                 alt_text=getattr(shape, "alt_text", None),
             )
@@ -259,6 +277,82 @@ class PPTXParser(BaseParser):
             underline=bool(font.underline),
             color_hex=color_hex,
         )
+
+    @classmethod
+    def _parse_background(cls, background) -> SlideBackground | None:
+        """Извлекает фон слайда или макета"""
+        if background is None:
+            return None
+
+        fill = background.fill
+        fill_type = str(fill.type) if fill.type is not None else None
+        color_hex = None
+        image_path = None
+
+        try:
+            if fill.type == 1:  # MSO_FILL_TYPE.SOLID
+                if fill.fore_color and fill.fore_color.rgb:
+                    color_hex = str(fill.fore_color.rgb)
+            elif fill.type == 6:  # MSO_FILL_TYPE.PICTURE
+                # Получение картинки фона сложнее, пропускаем или добавляем заглушку
+                pass
+        except Exception:
+            pass
+
+        if color_hex or image_path or fill_type:
+            return SlideBackground(
+                fill_type=fill_type,
+                color_hex=color_hex,
+                image_path=image_path,
+            )
+        return None
+
+    @classmethod
+    def _extract_theme(cls, prs) -> ThemeInfo | None:
+        """Извлекает тему презентации (цвета и шрифты)"""
+        try:
+            # Попытка получить первый master
+            if not prs.slide_masters:
+                return None
+            master = prs.slide_masters[0]
+            theme_part = master.part.part_related_by(RT.THEME)
+            if theme_part is None:
+                return None
+
+            theme_element = theme_part._element
+            nsmap = {
+                'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
+            }
+
+            colors: dict[str, str] = {}
+            # Извлечение цветовой схемы
+            clrScheme = theme_element.find('.//a:clrScheme', namespaces=nsmap)
+            if clrScheme is not None:
+                for color_entry in clrScheme:
+                    tag = etree.QName(color_entry).localname
+                    srgb = color_entry.find('a:srgbClr', namespaces=nsmap)
+                    if srgb is not None and srgb.get('val'):
+                        colors[tag] = srgb.get('val')
+                    else:
+                        sys_clr = color_entry.find('a:sysClr', namespaces=nsmap)
+                        if sys_clr is not None:
+                            colors[tag] = sys_clr.get('lastClr', sys_clr.get('val'))
+
+            fonts: dict[str, str] = {}
+            fontScheme = theme_element.find('.//a:fontScheme', namespaces=nsmap)
+            if fontScheme is not None:
+                major_font = fontScheme.find('a:majorFont/a:latin', namespaces=nsmap)
+                minor_font = fontScheme.find('a:minorFont/a:latin', namespaces=nsmap)
+                if major_font is not None and major_font.get('typeface'):
+                    fonts['major'] = major_font.get('typeface')
+                if minor_font is not None and minor_font.get('typeface'):
+                    fonts['minor'] = minor_font.get('typeface')
+
+            if colors or fonts:
+                return ThemeInfo(colors=colors, fonts=fonts)
+        except Exception:
+            pass
+        return None
 
     @classmethod
     def _classify_layout(cls, slide) -> LayoutType:
