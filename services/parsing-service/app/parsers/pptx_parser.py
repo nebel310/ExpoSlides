@@ -30,6 +30,8 @@ from app.models.presentation import (
 from app.parsers.base import BaseParser
 
 
+
+
 class PPTXParser(BaseParser):
     """Парсер файлов PowerPoint (.pptx)"""
 
