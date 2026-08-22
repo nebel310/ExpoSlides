@@ -2,10 +2,12 @@ import asyncio
 import uuid
 from pathlib import Path
 
-from pptx import Presentation as PPTXPresentation
-from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from lxml import etree
+from pptx import Presentation as PPTXPresentation
+from pptx.enum.dml import MSO_COLOR_TYPE
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.oxml.ns import qn
+from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 
 from app.models.presentation import (
     BBox,
@@ -28,8 +30,6 @@ from app.models.presentation import (
 from app.parsers.base import BaseParser
 
 
-
-
 class PPTXParser(BaseParser):
     """Парсер файлов PowerPoint (.pptx)"""
 
@@ -44,15 +44,15 @@ class PPTXParser(BaseParser):
         """Синхронно извлекает структуру презентации"""
         prs = PPTXPresentation(str(path))
 
+        theme = cls._extract_theme(prs)
+
         layouts: list[LayoutInfo] = []
         for idx, layout in enumerate(prs.slide_layouts, start=1):
-            layouts.append(cls._parse_layout(layout, idx))
+            layouts.append(cls._parse_layout(layout, idx, theme))
 
         slides: list[Slide] = []
         for idx, slide in enumerate(prs.slides, start=1):
-            slides.append(cls._parse_slide(slide, idx))
-
-        theme = cls._extract_theme(prs)
+            slides.append(cls._parse_slide(slide, idx, theme))
 
         return Presentation(
             source_path=str(path),
@@ -65,18 +65,23 @@ class PPTXParser(BaseParser):
         )
 
     @classmethod
-    def _parse_slide(cls, slide, index: int) -> Slide:
+    def _parse_slide(cls, slide, index: int, theme: ThemeInfo | None) -> Slide:
         """Извлекает данные одного слайда"""
         elements: list[SlideElement] = []
         for shape in slide.shapes:
-            elem = cls._parse_shape(shape)
+            elem = cls._parse_shape(shape, theme)
             if elem:
                 elements.append(elem)
 
         layout_index = None
         if slide.slide_layout:
             try:
-                layout_index = list(slide.slide_layout.part.package.presentation.slide_layouts).index(slide.slide_layout) + 1
+                layout_index = (
+                    list(slide.slide_layout.part.package.presentation.slide_layouts).index(
+                        slide.slide_layout
+                    )
+                    + 1
+                )
             except Exception:
                 pass
 
@@ -84,7 +89,11 @@ class PPTXParser(BaseParser):
 
         notes = None
         if slide.has_notes_slide:
-            notes = slide.notes_slide.notes_text_frame.text if slide.notes_slide.notes_text_frame else None
+            notes = (
+                slide.notes_slide.notes_text_frame.text
+                if slide.notes_slide.notes_text_frame
+                else None
+            )
 
         return Slide(
             index=index,
@@ -98,13 +107,13 @@ class PPTXParser(BaseParser):
         )
 
     @classmethod
-    def _parse_layout(cls, layout, index: int) -> LayoutInfo:
+    def _parse_layout(cls, layout, index: int, theme: ThemeInfo | None) -> LayoutInfo:
         """Извлекает информацию о макете"""
         elements: list[SlideElement] = []
         placeholders: list[PlaceholderInfo] = []
 
         for shape in layout.shapes:
-            elem = cls._parse_shape(shape)
+            elem = cls._parse_shape(shape, theme)
             if elem:
                 elements.append(elem)
                 if shape.is_placeholder:
@@ -134,7 +143,7 @@ class PPTXParser(BaseParser):
         )
 
     @classmethod
-    def _parse_shape(cls, shape) -> SlideElement | None:
+    def _parse_shape(cls, shape, theme: ThemeInfo | None) -> SlideElement | None:
         """Извлекает данные из одной фигуры слайда"""
         bbox = BBox(
             left=shape.left,
@@ -143,9 +152,12 @@ class PPTXParser(BaseParser):
             height=shape.height,
         )
 
+        # Порядок как позиция элемента среди соседей в родительском контейнере
         z_order = None
         try:
-            z_order = shape._element.order
+            parent = shape._element.getparent()
+            if parent is not None:
+                z_order = list(parent).index(shape._element)
         except Exception:
             pass
 
@@ -171,7 +183,9 @@ class PPTXParser(BaseParser):
             )
 
         if shape.has_text_frame:
-            text = cls._parse_text_frame(shape.text_frame)
+            text = cls._parse_text_frame(
+                shape.text_frame, placeholder_type, theme
+            )
             return SlideElement(
                 id=str(uuid.uuid4()),
                 type=ElementType.TEXT,
@@ -211,7 +225,9 @@ class PPTXParser(BaseParser):
         )
 
     @classmethod
-    def _parse_text_frame(cls, text_frame) -> TextElement:
+    def _parse_text_frame(
+        cls, text_frame, placeholder_type: str | None, theme: ThemeInfo | None
+    ) -> TextElement:
         """Извлекает текст и стили из текстовой рамки"""
         paragraphs: list[Paragraph] = []
         full_text_parts: list[str] = []
@@ -224,15 +240,27 @@ class PPTXParser(BaseParser):
                 runs.append(
                     Run(
                         text=run.text,
-                        style=cls._extract_style(run.font),
+                        style=cls._extract_style(
+                            run.font, para, placeholder_type, theme
+                        ),
                     )
                 )
                 para_text += run.text
 
+            # Определяем наличие маркера
+            bullet = False
+            pPr = para._p.find(qn('a:pPr'))
+            if pPr is not None:
+                if (
+                    pPr.find(qn('a:buChar')) is not None
+                    or pPr.find(qn('a:buAutoNum')) is not None
+                ):
+                    bullet = True
+
             paragraph = Paragraph(
                 text=para_text,
                 level=para.level if para.level is not None else 0,
-                bullet=False,
+                bullet=bullet,
                 runs=runs,
             )
 
@@ -242,6 +270,86 @@ class PPTXParser(BaseParser):
         return TextElement(
             paragraphs=paragraphs,
             full_text="\n".join(full_text_parts),
+        )
+
+    @classmethod
+    def _extract_style(
+        cls,
+        font,
+        paragraph,
+        placeholder_type: str | None,
+        theme: ThemeInfo | None,
+    ) -> TextStyle:
+        """Извлекает стиль текста с учётом темы"""
+        # Шрифт
+        font_name = font.name
+        if font_name is None:
+            if placeholder_type in ("TITLE", "SUBTITLE", "SECTION_HEADER"):
+                font_name = theme.fonts.get("major") if theme else None
+            else:
+                font_name = theme.fonts.get("minor") if theme else None
+        elif font_name.startswith("+mj"):
+            font_name = theme.fonts.get("major", font_name) if theme else font_name
+        elif font_name.startswith("+mn"):
+            font_name = theme.fonts.get("minor", font_name) if theme else font_name
+
+        # Цвет
+        color_hex = None
+        try:
+            if font.color and font.color.rgb:
+                color_hex = str(font.color.rgb)
+            elif font.color and font.color.type == MSO_COLOR_TYPE.SCHEME:
+                theme_color = font.color.theme_color
+                if theme_color is not None:
+                    # Пробуем несколько вариантов ключа
+                    key = theme_color.name.lower().replace("_", "")
+                    color_hex = theme.colors.get(key) if theme else None
+                    if color_hex is None and theme:
+                        # Альтернативные ключи: dk1 -> dark1, lt1 -> light1 и т.д.
+                        alt_map = {
+                            "dark1": "dk1",
+                            "light1": "lt1",
+                            "dark2": "dk2",
+                            "light2": "lt2",
+                            "hyperlink": "hlink",
+                            "followedhyperlink": "folHlink",
+                        }
+                        alt_key = alt_map.get(key)
+                        if alt_key:
+                            color_hex = theme.colors.get(alt_key)
+        except Exception:
+            pass
+
+        # Жирность, курсив, подчёркивание
+        bold = bool(font.bold)
+        italic = bool(font.italic)
+        underline = bool(font.underline)
+
+        # Размер
+        size_pt = font.size.pt if font.size else None
+
+        # Выравнивание из paragraph
+        alignment = None
+        if paragraph.alignment is not None:
+            alignment_map = {
+                0: "left",  # PP_ALIGN.LEFT
+                1: "center",
+                2: "right",
+                3: "justify",
+            }
+            alignment = alignment_map.get(paragraph.alignment, None)
+
+        line_spacing = paragraph.line_spacing if paragraph.line_spacing else None
+
+        return TextStyle(
+            font_name=font_name,
+            size_pt=size_pt,
+            bold=bold,
+            italic=italic,
+            underline=underline,
+            color_hex=color_hex,
+            alignment=alignment,
+            line_spacing=line_spacing,
         )
 
     @classmethod
@@ -260,25 +368,6 @@ class PPTXParser(BaseParser):
         return TableElement(rows=rows, cols=cols, cells=cells)
 
     @classmethod
-    def _extract_style(cls, font) -> TextStyle:
-        """Извлекает стиль текста из объекта font"""
-        color_hex = None
-        try:
-            if font.color and font.color.rgb:
-                color_hex = str(font.color.rgb)
-        except Exception:
-            pass
-
-        return TextStyle(
-            font_name=font.name,
-            size_pt=font.size.pt if font.size else None,
-            bold=bool(font.bold),
-            italic=bool(font.italic),
-            underline=bool(font.underline),
-            color_hex=color_hex,
-        )
-
-    @classmethod
     def _parse_background(cls, background) -> SlideBackground | None:
         """Извлекает фон слайда или макета"""
         if background is None:
@@ -294,7 +383,7 @@ class PPTXParser(BaseParser):
                 if fill.fore_color and fill.fore_color.rgb:
                     color_hex = str(fill.fore_color.rgb)
             elif fill.type == 6:  # MSO_FILL_TYPE.PICTURE
-                # Получение картинки фона сложнее, пропускаем или добавляем заглушку
+                # Получение картинки фона не реализовано
                 pass
         except Exception:
             pass
@@ -311,42 +400,47 @@ class PPTXParser(BaseParser):
     def _extract_theme(cls, prs) -> ThemeInfo | None:
         """Извлекает тему презентации (цвета и шрифты)"""
         try:
-            # Попытка получить первый master
-            if not prs.slide_masters:
-                return None
-            master = prs.slide_masters[0]
-            theme_part = master.part.part_related_by(RT.THEME)
+            # Пробуем получить тему через презентацию (надёжнее)
+            theme_part = prs.part.part_related_by(RT.THEME)
+            if theme_part is None and prs.slide_masters:
+                theme_part = prs.slide_masters[0].part.part_related_by(RT.THEME)
             if theme_part is None:
                 return None
 
             theme_element = theme_part._element
             nsmap = {
-                'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
+                "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
             }
 
             colors: dict[str, str] = {}
-            # Извлечение цветовой схемы
-            clrScheme = theme_element.find('.//a:clrScheme', namespaces=nsmap)
+            clrScheme = theme_element.find(".//a:clrScheme", namespaces=nsmap)
             if clrScheme is not None:
                 for color_entry in clrScheme:
-                    tag = etree.QName(color_entry).localname
-                    srgb = color_entry.find('a:srgbClr', namespaces=nsmap)
-                    if srgb is not None and srgb.get('val'):
-                        colors[tag] = srgb.get('val')
+                    localname = etree.QName(color_entry).localname
+                    srgb = color_entry.find("a:srgbClr", namespaces=nsmap)
+                    if srgb is not None and srgb.get("val"):
+                        hex_val = srgb.get("val")
                     else:
-                        sys_clr = color_entry.find('a:sysClr', namespaces=nsmap)
+                        sys_clr = color_entry.find("a:sysClr", namespaces=nsmap)
                         if sys_clr is not None:
-                            colors[tag] = sys_clr.get('lastClr', sys_clr.get('val'))
+                            hex_val = sys_clr.get("lastClr", sys_clr.get("val"))
+                        else:
+                            hex_val = None
+                    if hex_val:
+                        colors[localname] = hex_val
+                        # Добавляем нормализованное имя
+                        norm_name = localname.lower().replace("_", "")
+                        colors[norm_name] = hex_val
 
             fonts: dict[str, str] = {}
-            fontScheme = theme_element.find('.//a:fontScheme', namespaces=nsmap)
+            fontScheme = theme_element.find(".//a:fontScheme", namespaces=nsmap)
             if fontScheme is not None:
-                major_font = fontScheme.find('a:majorFont/a:latin', namespaces=nsmap)
-                minor_font = fontScheme.find('a:minorFont/a:latin', namespaces=nsmap)
-                if major_font is not None and major_font.get('typeface'):
-                    fonts['major'] = major_font.get('typeface')
-                if minor_font is not None and minor_font.get('typeface'):
-                    fonts['minor'] = minor_font.get('typeface')
+                major_font = fontScheme.find("a:majorFont/a:latin", namespaces=nsmap)
+                minor_font = fontScheme.find("a:minorFont/a:latin", namespaces=nsmap)
+                if major_font is not None and major_font.get("typeface"):
+                    fonts["major"] = major_font.get("typeface")
+                if minor_font is not None and minor_font.get("typeface"):
+                    fonts["minor"] = minor_font.get("typeface")
 
             if colors or fonts:
                 return ThemeInfo(colors=colors, fonts=fonts)
@@ -376,7 +470,6 @@ class PPTXParser(BaseParser):
         if "title only" in layout_name or "только заголовок" in layout_name:
             return LayoutType.TITLE
 
-        # Эвристика по placeholder_type
         placeholders = [sh for sh in slide.shapes if sh.is_placeholder]
         types = [ph.placeholder_format.type.name for ph in placeholders]
         if "TITLE" in types and ("BODY" in types or "CONTENT" in types):
