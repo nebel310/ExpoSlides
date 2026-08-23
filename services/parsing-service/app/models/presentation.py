@@ -87,6 +87,15 @@ class TableElement(BaseModel):
     cells: list[list[str]]
 
 
+class PlaceholderInfo(BaseModel):
+    """Информация о placeholder"""
+    placeholder_type: Optional[str] = None
+    name: Optional[str] = None
+    idx: Optional[int] = None
+    bbox: BBox
+    element: "SlideElement"
+
+
 class SlideElement(BaseModel):
     """Элемент слайда"""
     id: str
@@ -94,9 +103,18 @@ class SlideElement(BaseModel):
     bbox: BBox
     z_order: Optional[int] = None
     placeholder_type: Optional[str] = None
+    placeholder_idx: Optional[int] = None
+    placeholder_name: Optional[str] = None
     text: Optional[TextElement] = None
     image: Optional[ImageElement] = None
     table: Optional[TableElement] = None
+
+
+class SlideBackground(BaseModel):
+    """Фон слайда или макета"""
+    fill_type: Optional[str] = None
+    color_hex: Optional[str] = None
+    image_path: Optional[str] = None
 
 
 class Slide(BaseModel):
@@ -104,9 +122,26 @@ class Slide(BaseModel):
     index: int
     layout_type: LayoutType = LayoutType.UNKNOWN
     layout_name: Optional[str] = None
+    layout_index: Optional[int] = None
     placeholder_type: Optional[str] = None
     elements: list[SlideElement] = Field(default_factory=list)
-    background: Optional[dict] = None
+    background: Optional[SlideBackground] = None
+    notes: Optional[str] = None
+
+
+class LayoutInfo(BaseModel):
+    """Информация о макете слайда"""
+    name: str
+    index: int
+    elements: list[SlideElement] = Field(default_factory=list)
+    placeholders: list[PlaceholderInfo] = Field(default_factory=list)
+    background: Optional[SlideBackground] = None
+
+
+class ThemeInfo(BaseModel):
+    """Тема презентации (цвета и шрифты)"""
+    colors: dict[str, str] = Field(default_factory=dict)
+    fonts: dict[str, str] = Field(default_factory=dict)
 
 
 class Presentation(BaseModel):
@@ -116,3 +151,5 @@ class Presentation(BaseModel):
     slide_width: int
     slide_height: int
     slides: list[Slide] = Field(default_factory=list)
+    layouts: list[LayoutInfo] = Field(default_factory=list)
+    theme: Optional[ThemeInfo] = None

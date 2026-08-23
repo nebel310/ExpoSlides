@@ -39,3 +39,5 @@ Thumbs.db
 *.tmp
 *.bak
 *.pptx
+output.json
+*.json
