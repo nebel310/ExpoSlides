@@ -1,11 +1,13 @@
+import asyncio
+import json
+import logging
 from typing import Type, TypeVar
 from pydantic import BaseModel
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
 from app.config import settings
 
-
-
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -22,6 +24,9 @@ class LLMClient:
 
     async def generate_json(self, prompt: str, model: Type[T], strict: bool = True) -> T:
         """Генерация объекта модели из текста"""
+        logger.debug("Отправка запроса в LLM. Модель: %s, strict: %s", settings.llm_model, strict)
+        logger.debug("Промпт:\n%s", prompt)
+
         chat = Chat(
             model=settings.llm_model,
             messages=[Messages(role=MessagesRole.USER, content=prompt)],
@@ -33,13 +38,23 @@ class LLMClient:
             temperature=settings.llm_temperature,
             max_tokens=settings.llm_max_tokens,
         )
-        # GigaChat SDK пока не поддерживает async напрямую, но вызов выполняется в отдельном потоке
-        import asyncio
+
         loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, self.client.chat, chat)
-        content = response.choices[0].message.content
-        import json
-        data = json.loads(content)
-        return model.model_validate(data)
+        try:
+            response = await loop.run_in_executor(None, self.client.chat, chat)
+            content = response.choices[0].message.content
+            logger.debug("Ответ LLM (сырой):\n%s", content)
+            try:
+                data = json.loads(content)
+                result = model.model_validate(data)
+                logger.debug("Ответ успешно распарсен в %s: %s", model.__name__, result.model_dump())
+                return result
+            except Exception as e:
+                logger.error("Ошибка парсинга ответа LLM: %s", e)
+                logger.debug("Контент ответа: %s", content)
+                return model()
+        except Exception as e:
+            logger.error("Ошибка вызова LLM: %s", e)
+            return model()
 
 llm_client = LLMClient()
