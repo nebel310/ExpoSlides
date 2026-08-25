@@ -6,7 +6,7 @@ from app.graph import nodes
 
 
 def build_graph():
-    """Собирает граф LangGraph"""
+    """Сборка графа"""
     workflow = StateGraph(ContentGraphState)
 
     workflow.add_node("analyze_script", nodes.analyze_script)
@@ -31,7 +31,7 @@ def build_graph():
 
 
 def _should_retry(state: ContentGraphState):
-    """Определяет, нужно ли повторять генерацию"""
+    """Условие повтора генерации"""
     if state.validation and state.validation.ok:
         return "end"
     if state.retries < 2:

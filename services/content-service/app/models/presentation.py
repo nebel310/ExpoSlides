@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 
 class PlaceholderData(BaseModel):
-    """Данные placeholder'а слайда"""
+    """Placeholder слайда"""
     idx: Optional[int] = None
     name: Optional[str] = None
     placeholder_type: Optional[str] = None
@@ -14,7 +14,7 @@ class PlaceholderData(BaseModel):
 
 
 class SlideData(BaseModel):
-    """Данные слайда, необходимые для генерации"""
+    """Слайд"""
     index: int
     layout_type: Optional[str] = None
     layout_name: Optional[str] = None
@@ -23,21 +23,21 @@ class SlideData(BaseModel):
 
 
 class LayoutPlaceholderData(BaseModel):
-    """Placeholder в макете"""
+    """Placeholder макета"""
     placeholder_type: Optional[str] = None
     name: Optional[str] = None
     idx: Optional[int] = None
 
 
 class LayoutData(BaseModel):
-    """Макет слайда"""
+    """Макет"""
     name: str
     index: int
     placeholders: list[LayoutPlaceholderData] = Field(default_factory=list)
 
 
 class PresentationData(BaseModel):
-    """Упрощённая структура презентации для content-service"""
+    """Упрощённая структура презентации"""
     slide_width: int = 0
     slide_height: int = 0
     slides: list[SlideData] = Field(default_factory=list)

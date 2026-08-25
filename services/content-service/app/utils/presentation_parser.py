@@ -1,3 +1,4 @@
+from typing import Optional
 from app.models.presentation import (
     PresentationData,
     SlideData,
@@ -7,12 +8,14 @@ from app.models.presentation import (
 )
 
 
+
+
 class PresentationParser:
-    """Утилита для преобразования полного JSON в PresentationData"""
+    """Парсер полного JSON презентации в упрощённую модель"""
 
     @classmethod
     def parse(cls, presentation_json: dict) -> PresentationData:
-        """Извлекает необходимые данные из полного JSON презентации"""
+        """Преобразование полного JSON в PresentationData"""
         slides = []
         for slide in presentation_json.get("slides", []):
             placeholders = []
@@ -67,9 +70,9 @@ class PresentationParser:
         )
 
     @classmethod
-    def _estimate_max_length(cls, element: dict) -> int:
-        """Оценка максимальной длины текста на основе текущего текста"""
+    def _estimate_max_length(cls, element: dict) -> Optional[int]:
+        """Оценка максимальной длины текста"""
         text = element.get("text", {}).get("full_text", "")
         if text:
             return int(len(text) * 1.3)
-        return 0
+        return None

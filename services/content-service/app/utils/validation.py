@@ -1,14 +1,15 @@
 from app.models.presentation import PresentationData
-from app.models.response import SlideContent
-from app.models.graph_state import ValidationReport
+from app.models.graph_state import GeneratedSlideContent, ValidationReport
+
+
 
 
 class ContentValidator:
     """Программная валидация сгенерированного контента"""
 
     @classmethod
-    async def validate(cls, presentation: PresentationData, content: dict[int, SlideContent]) -> ValidationReport:
-        """Проверяет контент на полноту и длину"""
+    async def validate(cls, presentation: PresentationData, content: dict[int, GeneratedSlideContent]) -> ValidationReport:
+        """Проверка полноты и длины текста"""
         issues = []
         for slide in presentation.slides:
             slide_content = content.get(slide.index)

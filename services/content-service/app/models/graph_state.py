@@ -7,18 +7,32 @@ from app.models.request import GenerationSettings
 
 
 class ScriptAnalysis(BaseModel):
-    """Результат анализа скрипта"""
+    """Анализ скрипта"""
     blocks: list[dict] = Field(default_factory=list)
     key_messages: list[str] = Field(default_factory=list)
 
 
+class SlidePlanItem(BaseModel):
+    """План слайда"""
+    template_slide_index: Optional[int] = None
+    layout_type: Optional[str] = None
+    title: str = ""
+    content: str = ""
+    purpose: str = ""
+
+
 class SlidePlan(BaseModel):
-    """План слайдов"""
-    slides: list[dict] = Field(default_factory=list)
+    """План презентации"""
+    slides: list[SlidePlanItem] = Field(default_factory=list)
+
+
+class GeneratedSlideContent(BaseModel):
+    """Сгенерированный контент слайда"""
+    placeholders: dict[str, str] = Field(default_factory=dict)
 
 
 class ValidationReport(BaseModel):
-    """Отчёт о валидации"""
+    """Отчёт валидации"""
     ok: bool = False
     issues: list[str] = Field(default_factory=list)
 
@@ -31,6 +45,6 @@ class ContentGraphState(BaseModel):
     settings: GenerationSettings = Field(default_factory=GenerationSettings)
     analysis: Optional[ScriptAnalysis] = None
     plan: Optional[SlidePlan] = None
-    content: Optional[dict] = None
+    content: Optional[dict[int, GeneratedSlideContent]] = None
     validation: Optional[ValidationReport] = None
     retries: int = 0

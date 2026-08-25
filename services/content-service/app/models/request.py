@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 
 class GenerationSettings(BaseModel):
-    """Настройки генерации контента"""
+    """Настройки генерации"""
     language: str = "ru"
     tone: str = "professional"
     complexity: str = "medium"
@@ -14,11 +14,8 @@ class GenerationSettings(BaseModel):
 
 
 class GenerationRequest(BaseModel):
-    """Запрос на генерацию контента"""
-    presentation: dict = Field(..., description="JSON от parsing-service")
-    script: str = Field(..., description="Текст доклада")
-    user_mapping: Optional[dict] = Field(
-        default=None,
-        description="Пользовательская разметка: slide_index -> placeholder_name -> текст"
-    )
+    """Запрос на генерацию"""
+    presentation: dict
+    script: str
+    user_mapping: Optional[dict] = None
     settings: GenerationSettings = Field(default_factory=GenerationSettings)
