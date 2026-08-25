@@ -30,25 +30,15 @@ async def main() -> None:
     graph = build_graph()
     result = await graph.ainvoke(initial_state)
 
+    # Преобразуем словарь результата в ContentGraphState для удобной сериализации
+    result_state = ContentGraphState(**result)
+
     output_path = base_path / "generated_content.json"
     output_path.write_text(
-        json.dumps(_state_to_dict(result), ensure_ascii=False, indent=2),
+        json.dumps(result_state.model_dump(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     print(f"Результат сохранён в {output_path}")
-
-
-def _state_to_dict(state: ContentGraphState) -> dict:
-    """Преобразует состояние графа в словарь для сериализации"""
-    return {
-        "presentation": state.presentation.model_dump(),
-        "script": state.script,
-        "analysis": state.analysis.model_dump() if state.analysis else None,
-        "plan": state.plan.model_dump() if state.plan else None,
-        "content": {str(k): v.model_dump() for k, v in state.content.items()} if state.content else None,
-        "validation": state.validation.model_dump() if state.validation else None,
-        "retries": state.retries,
-    }
 
 
 if __name__ == "__main__":
