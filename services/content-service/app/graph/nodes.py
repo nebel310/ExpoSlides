@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, Dict
 
 from app.models.graph_state import (
     ContentGraphState,
@@ -132,7 +132,6 @@ async def _generate_slide_content(
     if template_slide_index is not None:
         slide = next((s for s in presentation.slides if s.index == template_slide_index), None)
     if slide is None and slide_plan.layout_type:
-        # попытка найти по layout_type
         slide = next((s for s in presentation.slides if s.layout_type == slide_plan.layout_type), None)
     if slide is None:
         logger.warning(f"Не найден слайд для плана: {slide_plan.model_dump()}, пропускаю")
@@ -146,36 +145,36 @@ async def _generate_slide_content(
     )
     logger.debug("Промпт для _generate_slide_content:\n%s", prompt)
 
-    generated = await llm_client.generate_json(prompt, GeneratedSlideContent)
-    placeholders = generated.placeholders
+    # Формируем схему с конкретными индексами placeholder'ов
+    schema = {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": False
+    }
+    for ph in slide.placeholders:
+        key = str(ph.idx) if ph.idx is not None else ph.name
+        if key is None:
+            continue
+        schema["properties"][key] = {"type": "string"}
+        schema["required"].append(key)
 
-    placeholders = _normalize_placeholders(placeholders, slide)
+    logger.debug("Схема для слайда %d: %s", slide.index, json.dumps(schema, ensure_ascii=False))
 
-    if user_mapping and slide is not None:
+    # Вызываем LLM с точной схемой
+    raw_placeholders = await llm_client.generate_json_with_schema(prompt, schema)
+
+    placeholders: Dict[str, str] = {}
+    if raw_placeholders:
+        placeholders.update(raw_placeholders)
+
+    # Применение пользовательской разметки
+    if user_mapping:
         slide_mapping = user_mapping.get(str(slide.index), {})
         placeholders.update(slide_mapping)
         logger.debug("Применена пользовательская разметка для слайда %d", slide.index)
 
     return (slide.index, GeneratedSlideContent(placeholders=placeholders))
-
-
-def _normalize_placeholders(raw: dict[str, str], slide: SlideData) -> dict[str, str]:
-    """Приведение ключей placeholder к str(idx) или name"""
-    normalized = {}
-    for ph in slide.placeholders:
-        key_candidates = []
-        if ph.idx is not None:
-            key_candidates.append(str(ph.idx))
-        if ph.name:
-            key_candidates.append(ph.name)
-        if ph.placeholder_type:
-            key_candidates.append(ph.placeholder_type)
-        for key in key_candidates:
-            if key in raw:
-                canonical_key = str(ph.idx) if ph.idx is not None else ph.name
-                normalized[canonical_key] = raw[key]
-                break
-    return normalized
 
 
 def _prepare_slides_info(presentation: PresentationData) -> str:
@@ -208,20 +207,13 @@ def _prepare_layouts_info(presentation: PresentationData) -> str:
 
 
 def _prepare_slide_info(slide: SlideData) -> str:
-    """Информация о слайде"""
+    """Информация о слайде с ключами-индексами"""
     placeholders_desc = []
     for ph in slide.placeholders:
-        key_options = []
-        if ph.idx is not None:
-            key_options.append(f'"{ph.idx}" (idx)')
-        if ph.name:
-            key_options.append(f'"{ph.name}" (name)')
-        if not key_options:
-            key_options.append(f'"{ph.placeholder_type}" (type)')
-        keys_str = " или ".join(key_options)
+        key = str(ph.idx) if ph.idx is not None else ph.name
         placeholders_desc.append(
-            f"Placeholder {ph.name or ph.idx} (type={ph.placeholder_type}), ключ: {keys_str}, "
-            f"текущий текст: '{ph.text}', max_len={ph.max_length or 'нет'}"
+            f"Placeholder {ph.name or ph.idx} (type={ph.placeholder_type}), "
+            f"ключ: \"{key}\", текущий текст: '{ph.text}', max_len={ph.max_length or 'нет'}"
         )
     return (
         f"Слайд {slide.index}: layout={slide.layout_name}, type={slide.layout_type}\n"
@@ -238,16 +230,9 @@ def _prepare_new_slide_info(presentation: PresentationData, layout_type: Optiona
         return f"Новый слайд с layout_type={layout_type} (макет не найден)"
     placeholders_desc = []
     for ph in layout.placeholders:
-        key_options = []
-        if ph.idx is not None:
-            key_options.append(f'"{ph.idx}" (idx)')
-        if ph.name:
-            key_options.append(f'"{ph.name}" (name)')
-        if not key_options:
-            key_options.append(f'"{ph.placeholder_type}" (type)')
-        keys_str = " или ".join(key_options)
+        key = str(ph.idx) if ph.idx is not None else ph.name
         placeholders_desc.append(
-            f"Placeholder {ph.name or ph.idx} (type={ph.placeholder_type}), ключ: {keys_str}"
+            f"Placeholder {ph.name or ph.idx} (type={ph.placeholder_type}), ключ: \"{key}\""
         )
     return (
         f"Новый слайд на основе layout '{layout.name}' (index={layout.index})\n"
