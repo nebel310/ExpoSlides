@@ -42,3 +42,4 @@ Thumbs.db
 output.json
 *.json
 *.txt
+!TODO.txt
