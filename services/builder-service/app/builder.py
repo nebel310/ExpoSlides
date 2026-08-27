@@ -1,12 +1,10 @@
 import asyncio
 from pathlib import Path
-from typing import Optional
 
 from pptx import Presentation as PPTXPresentation
 
 from app.models.presentation import Presentation
 from app.models.content import GeneratedContent
-from app.utils.clone import clone_slide
 from app.utils.text import replace_placeholder_text
 
 
@@ -27,36 +25,38 @@ class PPTXBuilder:
         template_pptx_path = Path(template_pptx_path)
         output_path = Path(output_path)
 
-        # открываем исходный шаблон для чтения слайдов
-        source_prs = await asyncio.to_thread(PPTXPresentation, str(template_pptx_path))
-        # создаём целевую презентацию на основе шаблона
-        target_prs = await asyncio.to_thread(PPTXPresentation, str(template_pptx_path))
+        prs = await asyncio.to_thread(PPTXPresentation, str(template_pptx_path))
 
-        # удаляем все существующие слайды из target_prs
-        xml_slides = target_prs.slides._sldIdLst
-        for sldId in list(xml_slides):
+        # индексы слайдов, которые нужно оставить (порядок важен)
+        slide_indices_to_keep = list(content_data.content.keys())
+
+        # собираем список всех слайдов с их исходными индексами
+        slides_with_indices = []
+        for i, slide in enumerate(prs.slides):
+            original_index = i + 1
+            if original_index in slide_indices_to_keep:
+                slides_with_indices.append((slide, original_index))
+
+        # удаляем все слайды, которые не нужно оставить
+        xml_slides = prs.slides._sldIdLst
+        # собираем sldId для удаления (те, чей индекс не в списке keep)
+        sldId_list = list(xml_slides)
+        to_remove = []
+        for i, sldId in enumerate(sldId_list):
+            original_index = i + 1
+            if original_index not in slide_indices_to_keep:
+                to_remove.append(sldId)
+
+        for sldId in to_remove:
             rId = sldId.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
-            target_prs.part.drop_rel(rId)
+            prs.part.drop_rel(rId)
             xml_slides.remove(sldId)
 
-        # получаем порядок слайдов из контента
-        slide_indices = list(content_data.content.keys())
-
-        for idx in slide_indices:
-            # в текущей схеме idx соответствует индексу слайда в шаблоне (начиная с 1)
-            slide_index = idx
-            if slide_index < 1 or slide_index > len(source_prs.slides):
-                # fallback на первый слайд
-                slide_index = 1
-
-            source_slide = source_prs.slides[slide_index - 1]
-            new_slide = await asyncio.to_thread(clone_slide, source_prs, target_prs, source_slide)
-
-            # замена текста в плейсхолдерах
-            slide_content = content_data.content[idx]
+        # теперь заменяем текст в оставшихся слайдах
+        for slide, original_index in slides_with_indices:
+            slide_content = content_data.content[original_index]
             for placeholder_key, text in slide_content.placeholders.items():
-                await asyncio.to_thread(replace_placeholder_text, new_slide, placeholder_key, text)
+                await asyncio.to_thread(replace_placeholder_text, slide, placeholder_key, text)
 
-        # сохраняем результат
-        await asyncio.to_thread(target_prs.save, str(output_path))
+        await asyncio.to_thread(prs.save, str(output_path))
         return output_path
