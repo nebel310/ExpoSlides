@@ -4,6 +4,8 @@ from typing import Any, Dict, Optional, Tuple
 
 from app.chains.llm import llm_client
 from app.chains.prompts import ANALYZE_SCRIPT_PROMPT, GENERATE_CONTENT_PROMPT, PLAN_SLIDES_PROMPT
+from app.config import settings as service_settings
+from app.errors import AnalysisValidationError, ContentValidationError, PlanValidationError
 from app.models.graph_state import (
     ContentGraphState,
     GeneratedSlideContent,
@@ -13,6 +15,7 @@ from app.models.graph_state import (
 )
 from app.models.presentation import PresentationData, SlideData
 from app.models.request import GenerationSettings
+from app.utils.grounding import extract_fact_tokens, find_unsupported_claim_markers
 from app.utils.validation import ContentValidator
 
 logger = logging.getLogger(__name__)
@@ -23,14 +26,26 @@ logger = logging.getLogger(__name__)
 async def analyze_script(state: ContentGraphState) -> dict[str, Any]:
     """Анализ скрипта"""
     logger.info("=== Запуск узла analyze_script ===")
-    prompt = ANALYZE_SCRIPT_PROMPT.format(
+    base_prompt = ANALYZE_SCRIPT_PROMPT.format(
         script=state.script,
         language=state.settings.language,
         complexity=state.settings.complexity,
     )
-    analysis = await llm_client.generate_json(prompt, ScriptAnalysis)
-    logger.info("Результат анализа: %s", analysis.model_dump())
-    return {"analysis": analysis}
+    prompt = base_prompt
+    for attempt in range(service_settings.llm_response_retries + 1):
+        analysis = await llm_client.generate_json(prompt, ScriptAnalysis)
+        issues = _analysis_grounding_issues(state.script, analysis)
+        if not issues:
+            logger.info("Результат анализа: %s", analysis.model_dump())
+            return {"analysis": analysis}
+        if attempt >= service_settings.llm_response_retries:
+            raise AnalysisValidationError(
+                "Анализ источника не прошёл проверку: " + "; ".join(issues)
+            )
+        logger.warning("Анализ источника отклонён, повтор %d: %s", attempt + 1, issues)
+        prompt = _append_validation_feedback(base_prompt, issues)
+
+    raise AssertionError("unreachable")
 
 
 async def plan_slides(state: ContentGraphState) -> dict[str, Any]:
@@ -41,7 +56,7 @@ async def plan_slides(state: ContentGraphState) -> dict[str, Any]:
     analysis = state.analysis.model_dump() if state.analysis else {}
     user_mapping = state.user_mapping or {}
 
-    prompt = PLAN_SLIDES_PROMPT.format(
+    base_prompt = PLAN_SLIDES_PROMPT.format(
         slides_info=slides_info,
         layouts_info=layouts_info,
         analysis=json.dumps(analysis, ensure_ascii=False),
@@ -51,21 +66,34 @@ async def plan_slides(state: ContentGraphState) -> dict[str, Any]:
         complexity=state.settings.complexity,
         max_slides=state.settings.max_slides or len(state.presentation.slides),
     )
-    logger.debug("Промпт для plan_slides:\n%s", prompt)
-    plan = await llm_client.generate_json(prompt, SlidePlan)
+    prompt = base_prompt
+    for attempt in range(service_settings.llm_response_retries + 1):
+        logger.debug("Промпт для plan_slides:\n%s", prompt)
+        plan = await llm_client.generate_json(prompt, SlidePlan)
+        issues = _plan_validation_issues(
+            plan,
+            state.presentation,
+            state.analysis,
+            state.settings.max_slides,
+            state.script,
+        )
+        if not issues:
+            normalized_plan = _normalize_plan(plan, state.presentation)
+            logger.info("План слайдов (после нормализации): %s", normalized_plan.model_dump())
+            return {"plan": normalized_plan}
+        if attempt >= service_settings.llm_response_retries:
+            raise PlanValidationError("План не прошёл проверку: " + "; ".join(issues))
+        logger.warning("План отклонён, повтор %d: %s", attempt + 1, issues)
+        prompt = _append_validation_feedback(base_prompt, issues)
 
-    plan = _normalize_plan(plan, state.presentation, state.settings.max_slides)
-
-    logger.info("План слайдов (после нормализации): %s", plan.model_dump())
-    return {"plan": plan}
+    raise AssertionError("unreachable")
 
 
 async def generate_content(state: ContentGraphState) -> dict[str, Any]:
     """Генерация контента для слайдов"""
     logger.info("=== Запуск узла generate_content ===")
     if not state.plan:
-        logger.warning("План отсутствует, возвращаю пустой контент")
-        return {"content": {}}
+        raise ContentValidationError("Невозможно сгенерировать контент без плана слайдов")
 
     content: dict[int, GeneratedSlideContent] = {}
     issues = state.validation.issues if state.validation else []
@@ -116,12 +144,14 @@ async def validate_content(state: ContentGraphState) -> dict[str, Any]:
         state.presentation,
         state.content or {},
         planned_slide_indices,
+        state.script,
     )
     logger.info("Результат валидации: ok=%s, issues=%s", validation.ok, validation.issues)
     update = {"validation": validation}
-    if not validation.ok and state.retries < 2:
+    if not validation.ok:
         update["retries"] = state.retries + 1
-        logger.info("Будет повторная генерация (retry %d)", state.retries + 1)
+        if state.retries < service_settings.content_validation_retries:
+            logger.info("Будет повторная генерация (retry %d)", state.retries + 1)
     return update
 
 
@@ -141,19 +171,23 @@ async def _generate_slide_content(
     if slide is None and slide_plan.layout_type:
         slide = next((s for s in presentation.slides if s.layout_type == slide_plan.layout_type), None)
     if slide is None:
-        logger.warning(f"Не найден слайд для плана: {slide_plan.model_dump()}, пропускаю")
-        return (None, GeneratedSlideContent())
+        raise ContentValidationError(
+            "Не найден слайд шаблона для элемента плана: "
+            f"{slide_plan.model_dump()}"
+        )
 
     slide_info = _prepare_slide_info(slide)
     prompt = GENERATE_CONTENT_PROMPT.format(
         slide_info=slide_info,
         slide_plan=json.dumps(slide_plan.model_dump(), ensure_ascii=False),
         analysis_context=_prepare_analysis_context(analysis, slide_plan),
+        required_facts=_prepare_required_facts(slide_plan),
         issues="\n".join(issues) if issues else "нет",
         language=settings.language,
         tone=settings.tone,
         complexity=settings.complexity,
     )
+    base_prompt = prompt
     logger.debug("Промпт для _generate_slide_content:\n%s", prompt)
 
     # Формируем схему с конкретными индексами placeholder'ов
@@ -175,8 +209,29 @@ async def _generate_slide_content(
 
     logger.debug("Схема для слайда %d: %s", slide.index, json.dumps(schema, ensure_ascii=False))
 
-    # Вызываем LLM с точной схемой
-    raw_placeholders = await llm_client.generate_json_with_schema(prompt, schema)
+    # Вызываем LLM с точной схемой и проверяем факты именно этого слайда.
+    raw_placeholders = None
+    for attempt in range(service_settings.llm_response_retries + 1):
+        raw_placeholders = await llm_client.generate_json_with_schema(prompt, schema)
+        grounding_issues = _slide_content_grounding_issues(
+            raw_placeholders,
+            slide_plan,
+            analysis,
+        )
+        if not grounding_issues:
+            break
+        if attempt >= service_settings.llm_response_retries:
+            raise ContentValidationError(
+                f"Слайд {slide.index} не прошёл проверку фактов: "
+                + "; ".join(grounding_issues)
+            )
+        logger.warning(
+            "Контент слайда %d отклонён, повтор %d: %s",
+            slide.index,
+            attempt + 1,
+            grounding_issues,
+        )
+        prompt = _append_validation_feedback(base_prompt, grounding_issues)
 
     placeholders: Dict[str, str] = {}
     if raw_placeholders:
@@ -191,87 +246,111 @@ async def _generate_slide_content(
     return (slide.index, GeneratedSlideContent(placeholders=placeholders))
 
 
-def _normalize_plan(
-    plan: SlidePlan,
-    presentation: PresentationData,
-    max_slides: Optional[int],
-) -> SlidePlan:
-    """Привязывает план к существующим уникальным слайдам шаблона."""
-    available_slides = presentation.slides
-    slide_by_index = {slide.index: slide for slide in available_slides}
-    slide_limit = min(max_slides or len(available_slides), len(available_slides))
-    normalized_items: list[SlidePlanItem] = []
-    used_indices: set[int] = set()
-
-    for position, item in enumerate(plan.slides):
-        if len(normalized_items) >= slide_limit:
-            break
-
-        selected_index = item.template_slide_index
-        if selected_index not in slide_by_index or selected_index in used_indices:
-            selected_index = _select_fallback_slide_index(
-                item,
-                position,
-                available_slides,
-                used_indices,
-            )
-        if selected_index is None:
-            logger.warning("Элемент плана %d не удалось привязать к слайду, пропущен", position)
-            continue
-
-        used_indices.add(selected_index)
-        selected_slide = slide_by_index[selected_index]
-        normalized_items.append(
-            item.model_copy(
-                update={
-                    "template_slide_index": selected_index,
-                    "layout_type": selected_slide.layout_type,
-                }
-            )
+def _normalize_plan(plan: SlidePlan, presentation: PresentationData) -> SlidePlan:
+    """Adds trusted template metadata after semantic validation has passed."""
+    slide_by_index = {slide.index: slide for slide in presentation.slides}
+    normalized_items = [
+        item.model_copy(
+            update={"layout_type": slide_by_index[item.template_slide_index].layout_type}
         )
-
-    if not normalized_items:
-        logger.warning("План пуст или некорректен, использую слайды шаблона по порядку")
-        normalized_items = [
-            SlidePlanItem(
-                template_slide_index=slide.index,
-                layout_type=slide.layout_type,
-                purpose="Сохранить содержание исходного слайда",
-            )
-            for slide in available_slides[:slide_limit]
-        ]
-
+        for item in plan.slides
+    ]
     return plan.model_copy(update={"slides": normalized_items})
 
 
-def _select_fallback_slide_index(
-    item: SlidePlanItem,
-    position: int,
-    available_slides: list[SlideData],
-    used_indices: set[int],
-) -> Optional[int]:
-    if item.layout_type:
-        matching_slide = next(
-            (
-                slide
-                for slide in available_slides
-                if slide.layout_type == item.layout_type and slide.index not in used_indices
+def _analysis_grounding_issues(source_text: str, analysis: ScriptAnalysis) -> list[str]:
+    analysis_text = "\n".join(
+        [
+            analysis.topic,
+            analysis.audience,
+            analysis.objective,
+            *analysis.key_messages,
+            *analysis.facts,
+            *(
+                text
+                for block in analysis.blocks
+                for text in [block.heading, block.summary, *block.key_points, *block.facts]
             ),
-            None,
-        )
-        if matching_slide:
-            return matching_slide.index
-
-    if position < len(available_slides):
-        positional_slide = available_slides[position]
-        if positional_slide.index not in used_indices:
-            return positional_slide.index
-
-    first_unused_slide = next(
-        (slide for slide in available_slides if slide.index not in used_indices),
-        None,
+        ]
     )
-    return first_unused_slide.index if first_unused_slide else None
+    source_tokens = extract_fact_tokens(source_text)
+    analysis_tokens = extract_fact_tokens(analysis_text)
+    issues = []
+    missing_tokens = sorted(source_tokens - analysis_tokens)
+    unexpected_tokens = sorted(analysis_tokens - source_tokens)
+    if missing_tokens:
+        issues.append("не сохранены факты из источника: " + ", ".join(missing_tokens))
+    if unexpected_tokens:
+        issues.append("добавлены факты не из источника: " + ", ".join(unexpected_tokens))
+    unsupported_claims = sorted(find_unsupported_claim_markers(source_text, analysis_text))
+    if unsupported_claims:
+        issues.append(
+            "добавлены неподтверждённые оценки или сравнения: "
+            + ", ".join(unsupported_claims)
+        )
+    return issues
+
+
+def _plan_validation_issues(
+    plan: SlidePlan,
+    presentation: PresentationData,
+    analysis: Optional[ScriptAnalysis],
+    max_slides: Optional[int],
+    source_text: str,
+) -> list[str]:
+    issues = []
+    available_indices = {slide.index for slide in presentation.slides}
+    planned_indices = [item.template_slide_index for item in plan.slides]
+    slide_limit = max_slides or len(available_indices)
+    if len(plan.slides) > slide_limit:
+        issues.append(f"слайдов {len(plan.slides)}, разрешено не больше {slide_limit}")
+    invalid_indices = sorted(set(planned_indices) - available_indices)
+    if invalid_indices:
+        issues.append("нет слайдов шаблона с индексами: " + ", ".join(map(str, invalid_indices)))
+    if len(planned_indices) != len(set(planned_indices)):
+        issues.append("template_slide_index должен быть уникальным")
+
+    available_block_indices = {block.index for block in analysis.blocks} if analysis else set()
+    referenced_block_indices = {
+        block_index
+        for item in plan.slides
+        for block_index in item.source_block_indices
+    }
+    invalid_block_indices = sorted(referenced_block_indices - available_block_indices)
+    if invalid_block_indices:
+        issues.append(
+            "source_block_indices отсутствуют в анализе: "
+            + ", ".join(map(str, invalid_block_indices))
+        )
+    plan_text = "\n".join(
+        text
+        for item in plan.slides
+        for text in [item.title, item.content, item.purpose, item.key_message]
+    )
+    source_tokens = extract_fact_tokens(source_text)
+    plan_tokens = extract_fact_tokens(plan_text)
+    missing_tokens = sorted(source_tokens - plan_tokens)
+    unexpected_tokens = sorted(plan_tokens - source_tokens)
+    if missing_tokens:
+        issues.append("план не распределил факты: " + ", ".join(missing_tokens))
+    if unexpected_tokens:
+        issues.append("план добавил факты не из источника: " + ", ".join(unexpected_tokens))
+    unsupported_claims = sorted(find_unsupported_claim_markers(source_text, plan_text))
+    if unsupported_claims:
+        issues.append(
+            "план содержит неподтверждённые оценки или сравнения: "
+            + ", ".join(unsupported_claims)
+        )
+    return issues
+
+
+def _append_validation_feedback(prompt: str, issues: list[str]) -> str:
+    return (
+        f"{prompt}\n\n"
+        "Предыдущий результат отклонён проверкой:\n- "
+        + "\n- ".join(issues)
+        + "\nИсправь все перечисленные ошибки и верни новый результат."
+    )
 
 
 def _issues_for_slide(issues: list[str], slide_index: Optional[int]) -> list[str]:
@@ -300,10 +379,41 @@ def _prepare_analysis_context(
         "topic": analysis.topic,
         "objective": analysis.objective,
         "key_messages": analysis.key_messages,
-        "facts": analysis.facts,
+        "facts": [fact for block in selected_blocks for fact in block.facts],
         "blocks": [block.model_dump() for block in selected_blocks],
     }
     return json.dumps(context, ensure_ascii=False)
+
+
+def _prepare_required_facts(slide_plan: SlidePlanItem) -> str:
+    plan_text = "\n".join(
+        [slide_plan.title, slide_plan.content, slide_plan.key_message]
+    )
+    tokens = sorted(extract_fact_tokens(plan_text))
+    return ", ".join(tokens) if tokens else "числовых фактов нет"
+
+
+def _slide_content_grounding_issues(
+    placeholders: dict[str, Any],
+    slide_plan: SlidePlanItem,
+    analysis: Optional[ScriptAnalysis],
+) -> list[str]:
+    generated_text = "\n".join(str(value) for value in placeholders.values())
+    plan_text = "\n".join(
+        [slide_plan.title, slide_plan.content, slide_plan.key_message]
+    )
+    required_tokens = extract_fact_tokens(plan_text)
+    allowed_text = _prepare_analysis_context(analysis, slide_plan)
+    allowed_tokens = extract_fact_tokens(allowed_text)
+    generated_tokens = extract_fact_tokens(generated_text)
+    issues = []
+    missing_tokens = sorted(required_tokens - generated_tokens)
+    unexpected_tokens = sorted(generated_tokens - allowed_tokens)
+    if missing_tokens:
+        issues.append("обязательные факты отсутствуют: " + ", ".join(missing_tokens))
+    if unexpected_tokens:
+        issues.append("добавлены факты не из источника: " + ", ".join(unexpected_tokens))
+    return issues
 
 
 def _prepare_slides_info(presentation: PresentationData) -> str:

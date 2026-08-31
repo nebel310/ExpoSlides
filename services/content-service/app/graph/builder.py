@@ -1,3 +1,5 @@
+from app.config import settings
+from app.errors import ContentValidationError
 from app.graph import nodes
 from app.models.graph_state import ContentGraphState
 from langgraph.graph import END, StateGraph
@@ -32,6 +34,9 @@ def _should_retry(state: ContentGraphState):
     """Условие повтора генерации"""
     if state.validation and state.validation.ok:
         return "end"
-    if state.retries < 2:
+    if state.retries <= settings.content_validation_retries:
         return "retry"
-    return "end"
+    issues = state.validation.issues if state.validation else ["нет отчёта валидации"]
+    raise ContentValidationError(
+        "Контент не прошёл валидацию после повторных попыток: " + "; ".join(issues)
+    )

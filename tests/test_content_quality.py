@@ -13,6 +13,7 @@ def test_retry_prompt_contains_validation_feedback() -> None:
         tone="professional",
         complexity="medium",
         analysis_context="Факт: рост составил 18%",
+        required_facts="18%",
         slide_info="Слайд 1",
         slide_plan="Заголовок и тезисы",
         issues="Текст заголовка слишком длинный",

@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from app.config import setup_logging
+from app.errors import GenerationPipelineError
 from app.graph.builder import build_graph
 from app.models.graph_state import ContentGraphState
 from app.models.request import GenerationSettings
@@ -41,18 +42,24 @@ async def main() -> None:
     graph = build_graph()
 
     logger.info("Запуск графа")
-    result = await graph.ainvoke(initial_state)
-    result_state = ContentGraphState(**result)
-    logger.info("Граф завершил работу")
+    try:
+        result = await graph.ainvoke(initial_state)
+        result_state = ContentGraphState(**result)
+        logger.info("Граф завершил работу")
 
-    response_content = {}
-    for idx, slide in result_state.content.items():
-        response_content[idx] = SlideContentResponse(placeholders=slide.placeholders, notes=None)
-
-    response = GenerationResponse(
-        content=response_content,
-        validation_report=result_state.validation.model_dump() if result_state.validation else None,
-    )
+        response_content = {
+            idx: SlideContentResponse(placeholders=slide.placeholders, notes=None)
+            for idx, slide in (result_state.content or {}).items()
+        }
+        response = GenerationResponse(
+            content=response_content,
+            validation_report=(
+                result_state.validation.model_dump() if result_state.validation else None
+            ),
+        )
+    except GenerationPipelineError as error:
+        logger.error("Генерация завершилась контролируемой ошибкой: %s", error)
+        response = GenerationResponse(error=str(error))
 
     output_path = base_path / "generated_content.json"
     output_path.write_text(

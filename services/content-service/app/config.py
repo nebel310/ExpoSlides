@@ -1,5 +1,6 @@
 import logging
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,6 +13,8 @@ class Settings(BaseSettings):
     llm_scope: str = "GIGACHAT_API_PERS"
     llm_temperature: float = 0.2
     llm_max_tokens: int = 4096
+    llm_response_retries: int = Field(default=2, ge=0, le=5)
+    content_validation_retries: int = Field(default=2, ge=0, le=5)
     log_file: str = "content_service.log"
     log_level: str = "DEBUG"
 

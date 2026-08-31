@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import importlib
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CONTENT_SERVICE_ROOT = REPOSITORY_ROOT / "services" / "content-service"
@@ -16,7 +19,38 @@ def _load_content_modules(service_importer):
     return nodes, graph_state, presentation, request
 
 
-def test_plan_normalization_enforces_unique_indices_and_limit(service_importer) -> None:
+def _analysis(graph_state, facts: list[str] | None = None):
+    facts = facts or []
+    return graph_state.ScriptAnalysis(
+        topic="Результаты",
+        audience="",
+        objective="",
+        blocks=[
+            graph_state.ScriptBlock(
+                index=1,
+                heading="Главное",
+                summary="Краткое содержание",
+                key_points=["Основной тезис"],
+                facts=facts,
+            )
+        ],
+        key_messages=["Основной тезис"],
+        facts=facts,
+    )
+
+
+def _plan_item(graph_state, template_slide_index: int = 1):
+    return graph_state.SlidePlanItem(
+        template_slide_index=template_slide_index,
+        title="Основной тезис",
+        content="Кратко раскрыть основной тезис",
+        purpose="Показать главное",
+        key_message="Основной тезис",
+        source_block_indices=[1],
+    )
+
+
+def test_plan_validation_rejects_invalid_indices_duplicates_and_limit(service_importer) -> None:
     nodes, graph_state, presentation, _ = _load_content_modules(service_importer)
     template = presentation.PresentationData(
         slides=[
@@ -27,15 +61,23 @@ def test_plan_normalization_enforces_unique_indices_and_limit(service_importer) 
     )
     plan = graph_state.SlidePlan(
         slides=[
-            graph_state.SlidePlanItem(template_slide_index=1, key_message="Контекст"),
-            graph_state.SlidePlanItem(template_slide_index=1, key_message="Результат"),
-            graph_state.SlidePlanItem(template_slide_index=99, key_message="Вывод"),
+            _plan_item(graph_state, 1),
+            _plan_item(graph_state, 1),
+            _plan_item(graph_state, 99),
         ]
     )
 
-    normalized = nodes._normalize_plan(plan, template, max_slides=2)
+    issues = nodes._plan_validation_issues(
+        plan,
+        template,
+        _analysis(graph_state),
+        2,
+        "Основной тезис",
+    )
 
-    assert [item.template_slide_index for item in normalized.slides] == [1, 2]
+    assert any("разрешено не больше 2" in issue for issue in issues)
+    assert any("индексами: 99" in issue for issue in issues)
+    assert "template_slide_index должен быть уникальным" in issues
 
 
 def test_analysis_prompt_uses_source_and_generation_settings(monkeypatch, service_importer) -> None:
@@ -44,7 +86,7 @@ def test_analysis_prompt_uses_source_and_generation_settings(monkeypatch, servic
 
     async def fake_generate_json(prompt, model, strict=True):
         captured["prompt"] = prompt
-        return model()
+        return _analysis(graph_state, ["18%"])
 
     monkeypatch.setattr(nodes.llm_client, "generate_json", fake_generate_json)
     state = graph_state.ContentGraphState(
@@ -56,6 +98,7 @@ def test_analysis_prompt_uses_source_and_generation_settings(monkeypatch, servic
     asyncio.run(nodes.analyze_script(state))
 
     assert "Выручка выросла на 18%" in captured["prompt"]
+    assert "18%" in captured["prompt"]
     assert "язык: ru" in captured["prompt"]
     assert "сложность формулировок: simple" in captured["prompt"]
     assert "Не додумывай" in captured["prompt"]
@@ -63,17 +106,12 @@ def test_analysis_prompt_uses_source_and_generation_settings(monkeypatch, servic
 
 def test_planning_prompt_and_result_respect_max_slides(monkeypatch, service_importer) -> None:
     nodes, graph_state, presentation, request = _load_content_modules(service_importer)
-    captured = {}
+    captured = []
 
     async def fake_generate_json(prompt, model, strict=True):
-        captured["prompt"] = prompt
-        return model(
-            slides=[
-                graph_state.SlidePlanItem(template_slide_index=1),
-                graph_state.SlidePlanItem(template_slide_index=2),
-                graph_state.SlidePlanItem(template_slide_index=3),
-            ]
-        )
+        captured.append(prompt)
+        slide_count = 3 if len(captured) == 1 else 2
+        return model(slides=[_plan_item(graph_state, index) for index in range(1, slide_count + 1)])
 
     monkeypatch.setattr(nodes.llm_client, "generate_json", fake_generate_json)
     state = graph_state.ContentGraphState(
@@ -85,16 +123,17 @@ def test_planning_prompt_and_result_respect_max_slides(monkeypatch, service_impo
             ]
         ),
         script="Текст",
-        analysis=graph_state.ScriptAnalysis(key_messages=["Первое", "Второе"]),
+        analysis=_analysis(graph_state),
         settings=request.GenerationSettings(max_slides=2, tone="neutral"),
     )
 
     result = asyncio.run(nodes.plan_slides(state))
 
     assert len(result["plan"].slides) == 2
-    assert "максимальное количество слайдов: 2" in captured["prompt"]
-    assert "тон: neutral" in captured["prompt"]
-    assert "Один template_slide_index используй не более одного раза" in captured["prompt"]
+    assert "максимальное количество слайдов: 2" in captured[0]
+    assert "тон: neutral" in captured[0]
+    assert "Один template_slide_index используй не более одного раза" in captured[0]
+    assert "Предыдущий результат отклонён проверкой" in captured[1]
 
 
 def test_generation_prompt_is_grounded_and_schema_has_length_limit(
@@ -119,18 +158,20 @@ def test_generation_prompt_is_grounded_and_schema_has_length_limit(
             )
         ]
     )
-    plan_item = graph_state.SlidePlanItem(
-        template_slide_index=1,
-        key_message="Выручка выросла на 18%",
-        source_block_indices=[1],
-    )
+    plan_item = _plan_item(graph_state)
+    plan_item = plan_item.model_copy(update={"key_message": "Выручка выросла на 18%"})
     analysis = graph_state.ScriptAnalysis(
         topic="Результаты квартала",
+        audience="",
+        objective="",
         facts=["Выручка выросла на 18%"],
+        key_messages=["Выручка выросла на 18%"],
         blocks=[
             graph_state.ScriptBlock(
                 index=1,
+                heading="Рост",
                 summary="Рост выручки",
+                key_points=["Выручка выросла на 18%"],
                 facts=["Выручка выросла на 18%"],
             )
         ],
@@ -180,8 +221,8 @@ def test_retry_preserves_valid_slides(monkeypatch, service_importer) -> None:
         script="Текст",
         plan=graph_state.SlidePlan(
             slides=[
-                graph_state.SlidePlanItem(template_slide_index=1),
-                graph_state.SlidePlanItem(template_slide_index=2),
+                _plan_item(graph_state, 1),
+                _plan_item(graph_state, 2),
             ]
         ),
         content={1: previous_first_slide},
@@ -250,3 +291,168 @@ def test_validation_ignores_unplanned_template_slides(service_importer) -> None:
 
     assert report.ok is True
     assert report.issues == []
+
+
+def test_llm_retries_malformed_json_instead_of_returning_empty_model(
+    monkeypatch,
+    service_importer,
+) -> None:
+    llm = service_importer(CONTENT_SERVICE_ROOT, "app.chains.llm")
+    graph_state = importlib.import_module("app.models.graph_state")
+    responses = iter(
+        [
+            "{broken json",
+            """{
+                "topic": "Рост",
+                "audience": "",
+                "objective": "",
+                "blocks": [{
+                    "index": 1,
+                    "heading": "Результат",
+                    "summary": "Выручка выросла на 18%",
+                    "key_points": ["Рост 18%"],
+                    "facts": ["18%"]
+                }],
+                "key_messages": ["Рост 18%"],
+                "facts": ["18%"]
+            }""",
+        ]
+    )
+    calls = []
+
+    def fake_chat(_chat):
+        calls.append(True)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=next(responses)))]
+        )
+
+    monkeypatch.setattr(llm.llm_client.client, "chat", fake_chat)
+
+    result = asyncio.run(llm.llm_client.generate_json("Источник", graph_state.ScriptAnalysis))
+
+    assert result.topic == "Рост"
+    assert len(calls) == 2
+
+
+def test_llm_raises_typed_error_after_invalid_responses(monkeypatch, service_importer) -> None:
+    llm = service_importer(CONTENT_SERVICE_ROOT, "app.chains.llm")
+    errors = importlib.import_module("app.errors")
+    graph_state = importlib.import_module("app.models.graph_state")
+
+    def fake_chat(_chat):
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="not json"))]
+        )
+
+    monkeypatch.setattr(llm.llm_client.client, "chat", fake_chat)
+
+    with pytest.raises(errors.LLMGenerationError, match="remained invalid"):
+        asyncio.run(llm.llm_client.generate_json("Источник", graph_state.ScriptAnalysis))
+
+
+def test_llm_recovers_code_fence_and_trailing_commas(service_importer) -> None:
+    llm = service_importer(CONTENT_SERVICE_ROOT, "app.chains.llm")
+
+    parsed = llm.LLMClient._parse_json_object(
+        """```json
+        {"slides": [{"title": "Итог",}],}
+        ```"""
+    )
+
+    assert parsed == {"slides": [{"title": "Итог"}]}
+
+
+def test_llm_recovers_noise_before_json_line_tokens(service_importer) -> None:
+    llm = service_importer(CONTENT_SERVICE_ROOT, "app.chains.llm")
+
+    parsed = llm.LLMClient._parse_json_object(
+        """{
+        noise "blocks": [
+            garbage {"index": 1, "facts": [
+                كلمة "87% участников",
+                marker "6 минут"
+            ]},
+            trailing ]
+        suffix }"""
+    )
+
+    assert parsed == {
+        "blocks": [{"index": 1, "facts": ["87% участников", "6 минут"]}]
+    }
+
+
+def test_fact_tokens_do_not_capture_line_breaks(service_importer) -> None:
+    grounding = service_importer(CONTENT_SERVICE_ROOT, "app.utils.grounding")
+
+    assert grounding.extract_fact_tokens("2026\n87% участников") == {"2026", "87%"}
+
+
+def test_grounding_rejects_derived_claim_absent_from_source(service_importer) -> None:
+    grounding = service_importer(CONTENT_SERVICE_ROOT, "app.utils.grounding")
+
+    unsupported = grounding.find_unsupported_claim_markers(
+        "Первый этап охватил 120 человек, следующий охватит 300 человек",
+        "Охват увеличится втрое",
+    )
+
+    assert unsupported == {"втрое"}
+
+
+def test_content_validation_checks_source_facts(service_importer) -> None:
+    nodes, graph_state, presentation, _ = _load_content_modules(service_importer)
+    template = presentation.PresentationData(slides=[presentation.SlideData(index=1)])
+    content = {
+        1: graph_state.GeneratedSlideContent(
+            placeholders={"0": "Выручка выросла на 21% в 2025 году"}
+        )
+    }
+
+    report = asyncio.run(
+        nodes.ContentValidator.validate(
+            template,
+            content,
+            {1},
+            "Выручка выросла на 18% в 2026 году",
+        )
+    )
+
+    assert report.ok is False
+    assert any("18%" in issue and "2026" in issue for issue in report.issues)
+    assert any("21%" in issue and "2025" in issue for issue in report.issues)
+
+
+def test_slide_grounding_checks_its_planned_facts(service_importer) -> None:
+    nodes, graph_state, _, _ = _load_content_modules(service_importer)
+    plan_item = _plan_item(graph_state).model_copy(
+        update={
+            "content": "Показать 87% и 6 минут",
+            "key_message": "87% справились за 6 минут",
+        }
+    )
+    analysis = _analysis(graph_state, ["87%", "6 минут"])
+
+    issues = nodes._slide_content_grounding_issues(
+        {"0": "Самостоятельно справились 8 участников"},
+        plan_item,
+        analysis,
+    )
+
+    assert any("6" in issue and "87%" in issue for issue in issues)
+    assert any("8" in issue for issue in issues)
+
+
+def test_graph_raises_after_content_retry_budget(service_importer) -> None:
+    builder = service_importer(CONTENT_SERVICE_ROOT, "app.graph.builder")
+    errors = importlib.import_module("app.errors")
+    graph_state = importlib.import_module("app.models.graph_state")
+    presentation = importlib.import_module("app.models.presentation")
+    config = importlib.import_module("app.config")
+    state = graph_state.ContentGraphState(
+        presentation=presentation.PresentationData(),
+        script="Источник",
+        retries=config.settings.content_validation_retries + 1,
+        validation=graph_state.ValidationReport(ok=False, issues=["Факт потерян"]),
+    )
+
+    with pytest.raises(errors.ContentValidationError, match="Факт потерян"):
+        builder._should_retry(state)
