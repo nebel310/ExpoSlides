@@ -43,3 +43,5 @@ output.json
 *.json
 *.txt
 !TODO.txt
+!evals/generation_cases.json
+*.txt

@@ -1,18 +1,18 @@
-import asyncio
 import json
 import logging
-from typing import Any, Optional, Tuple, Dict
+from typing import Any, Dict, Optional, Tuple
 
+from app.chains.llm import llm_client
+from app.chains.prompts import ANALYZE_SCRIPT_PROMPT, GENERATE_CONTENT_PROMPT, PLAN_SLIDES_PROMPT
 from app.models.graph_state import (
     ContentGraphState,
+    GeneratedSlideContent,
     ScriptAnalysis,
     SlidePlan,
     SlidePlanItem,
-    GeneratedSlideContent,
 )
 from app.models.presentation import PresentationData, SlideData
-from app.chains.prompts import ANALYZE_SCRIPT_PROMPT, PLAN_SLIDES_PROMPT, GENERATE_CONTENT_PROMPT
-from app.chains.llm import llm_client
+from app.models.request import GenerationSettings
 from app.utils.validation import ContentValidator
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,11 @@ logger = logging.getLogger(__name__)
 async def analyze_script(state: ContentGraphState) -> dict[str, Any]:
     """Анализ скрипта"""
     logger.info("=== Запуск узла analyze_script ===")
-    prompt = ANALYZE_SCRIPT_PROMPT.format(script=state.script)
+    prompt = ANALYZE_SCRIPT_PROMPT.format(
+        script=state.script,
+        language=state.settings.language,
+        complexity=state.settings.complexity,
+    )
     analysis = await llm_client.generate_json(prompt, ScriptAnalysis)
     logger.info("Результат анализа: %s", analysis.model_dump())
     return {"analysis": analysis}
@@ -42,38 +46,15 @@ async def plan_slides(state: ContentGraphState) -> dict[str, Any]:
         layouts_info=layouts_info,
         analysis=json.dumps(analysis, ensure_ascii=False),
         user_mapping=json.dumps(user_mapping, ensure_ascii=False),
+        language=state.settings.language,
+        tone=state.settings.tone,
+        complexity=state.settings.complexity,
+        max_slides=state.settings.max_slides or len(state.presentation.slides),
     )
     logger.debug("Промпт для plan_slides:\n%s", prompt)
     plan = await llm_client.generate_json(prompt, SlidePlan)
 
-    if not plan.slides:
-        logger.warning("План пуст, заполняю всеми слайдами шаблона")
-        plan.slides = [
-            SlidePlanItem(template_slide_index=slide.index, title="", content="", purpose="")
-            for slide in state.presentation.slides
-        ]
-    else:
-        updated_slides = []
-        for i, item in enumerate(plan.slides):
-            if item.template_slide_index is not None:
-                updated_slides.append(item)
-            else:
-                layout = item.layout_type
-                matched_index = None
-                if layout:
-                    for slide in state.presentation.slides:
-                        if slide.layout_type == layout:
-                            matched_index = slide.index
-                            break
-                if matched_index is None and i < len(state.presentation.slides):
-                    matched_index = state.presentation.slides[i].index
-                if matched_index is not None:
-                    updated_item = item.model_copy(update={"template_slide_index": matched_index})
-                    updated_slides.append(updated_item)
-                    logger.debug(f"Элементу плана {i} присвоен template_slide_index={matched_index}")
-                else:
-                    logger.warning(f"Элемент плана {i} не удалось привязать к слайду, пропущен")
-        plan.slides = updated_slides
+    plan = _normalize_plan(plan, state.presentation, state.settings.max_slides)
 
     logger.info("План слайдов (после нормализации): %s", plan.model_dump())
     return {"plan": plan}
@@ -88,15 +69,30 @@ async def generate_content(state: ContentGraphState) -> dict[str, Any]:
 
     content: dict[int, GeneratedSlideContent] = {}
     issues = state.validation.issues if state.validation else []
+    previous_content = state.content or {}
 
     logger.info("Всего слайдов в плане: %d", len(state.plan.slides))
     for i, slide_plan in enumerate(state.plan.slides, 1):
         logger.info("--- Генерация контента для слайда %d/%d ---", i, len(state.plan.slides))
+        slide_index = slide_plan.template_slide_index
+        slide_issues = _issues_for_slide(issues, slide_index)
+        if (
+            state.validation is not None
+            and slide_index is not None
+            and slide_index in previous_content
+            and not slide_issues
+        ):
+            content[slide_index] = previous_content[slide_index]
+            logger.info("Слайд %d прошёл валидацию и сохранён без повторной генерации", slide_index)
+            continue
+
         slide_idx, slide_content = await _generate_slide_content(
             state.presentation,
             slide_plan,
             state.user_mapping,
-            issues,
+            slide_issues,
+            state.analysis,
+            state.settings,
         )
         if slide_idx is not None:
             content[slide_idx] = slide_content
@@ -111,7 +107,16 @@ async def generate_content(state: ContentGraphState) -> dict[str, Any]:
 async def validate_content(state: ContentGraphState) -> dict[str, Any]:
     """Валидация контента"""
     logger.info("=== Запуск узла validate_content ===")
-    validation = await ContentValidator.validate(state.presentation, state.content or {})
+    planned_slide_indices = {
+        item.template_slide_index
+        for item in state.plan.slides
+        if item.template_slide_index is not None
+    } if state.plan else None
+    validation = await ContentValidator.validate(
+        state.presentation,
+        state.content or {},
+        planned_slide_indices,
+    )
     logger.info("Результат валидации: ok=%s, issues=%s", validation.ok, validation.issues)
     update = {"validation": validation}
     if not validation.ok and state.retries < 2:
@@ -125,6 +130,8 @@ async def _generate_slide_content(
     slide_plan: SlidePlanItem,
     user_mapping: Optional[dict],
     issues: list[str],
+    analysis: Optional[ScriptAnalysis],
+    settings: GenerationSettings,
 ) -> Tuple[Optional[int], GeneratedSlideContent]:
     """Генерация контента для одного слайда"""
     slide = None
@@ -140,8 +147,12 @@ async def _generate_slide_content(
     slide_info = _prepare_slide_info(slide)
     prompt = GENERATE_CONTENT_PROMPT.format(
         slide_info=slide_info,
-        slide_plan=slide_plan.model_dump(),
+        slide_plan=json.dumps(slide_plan.model_dump(), ensure_ascii=False),
+        analysis_context=_prepare_analysis_context(analysis, slide_plan),
         issues="\n".join(issues) if issues else "нет",
+        language=settings.language,
+        tone=settings.tone,
+        complexity=settings.complexity,
     )
     logger.debug("Промпт для _generate_slide_content:\n%s", prompt)
 
@@ -156,7 +167,10 @@ async def _generate_slide_content(
         key = str(ph.idx) if ph.idx is not None else ph.name
         if key is None:
             continue
-        schema["properties"][key] = {"type": "string"}
+        property_schema = {"type": "string"}
+        if ph.max_length:
+            property_schema["maxLength"] = ph.max_length
+        schema["properties"][key] = property_schema
         schema["required"].append(key)
 
     logger.debug("Схема для слайда %d: %s", slide.index, json.dumps(schema, ensure_ascii=False))
@@ -175,6 +189,121 @@ async def _generate_slide_content(
         logger.debug("Применена пользовательская разметка для слайда %d", slide.index)
 
     return (slide.index, GeneratedSlideContent(placeholders=placeholders))
+
+
+def _normalize_plan(
+    plan: SlidePlan,
+    presentation: PresentationData,
+    max_slides: Optional[int],
+) -> SlidePlan:
+    """Привязывает план к существующим уникальным слайдам шаблона."""
+    available_slides = presentation.slides
+    slide_by_index = {slide.index: slide for slide in available_slides}
+    slide_limit = min(max_slides or len(available_slides), len(available_slides))
+    normalized_items: list[SlidePlanItem] = []
+    used_indices: set[int] = set()
+
+    for position, item in enumerate(plan.slides):
+        if len(normalized_items) >= slide_limit:
+            break
+
+        selected_index = item.template_slide_index
+        if selected_index not in slide_by_index or selected_index in used_indices:
+            selected_index = _select_fallback_slide_index(
+                item,
+                position,
+                available_slides,
+                used_indices,
+            )
+        if selected_index is None:
+            logger.warning("Элемент плана %d не удалось привязать к слайду, пропущен", position)
+            continue
+
+        used_indices.add(selected_index)
+        selected_slide = slide_by_index[selected_index]
+        normalized_items.append(
+            item.model_copy(
+                update={
+                    "template_slide_index": selected_index,
+                    "layout_type": selected_slide.layout_type,
+                }
+            )
+        )
+
+    if not normalized_items:
+        logger.warning("План пуст или некорректен, использую слайды шаблона по порядку")
+        normalized_items = [
+            SlidePlanItem(
+                template_slide_index=slide.index,
+                layout_type=slide.layout_type,
+                purpose="Сохранить содержание исходного слайда",
+            )
+            for slide in available_slides[:slide_limit]
+        ]
+
+    return plan.model_copy(update={"slides": normalized_items})
+
+
+def _select_fallback_slide_index(
+    item: SlidePlanItem,
+    position: int,
+    available_slides: list[SlideData],
+    used_indices: set[int],
+) -> Optional[int]:
+    if item.layout_type:
+        matching_slide = next(
+            (
+                slide
+                for slide in available_slides
+                if slide.layout_type == item.layout_type and slide.index not in used_indices
+            ),
+            None,
+        )
+        if matching_slide:
+            return matching_slide.index
+
+    if position < len(available_slides):
+        positional_slide = available_slides[position]
+        if positional_slide.index not in used_indices:
+            return positional_slide.index
+
+    first_unused_slide = next(
+        (slide for slide in available_slides if slide.index not in used_indices),
+        None,
+    )
+    return first_unused_slide.index if first_unused_slide else None
+
+
+def _issues_for_slide(issues: list[str], slide_index: Optional[int]) -> list[str]:
+    if slide_index is None:
+        return issues
+    slide_prefixes = (f"Слайд {slide_index}:", f"Слайд {slide_index},")
+    global_issues = [issue for issue in issues if not issue.startswith("Слайд ")]
+    slide_issues = [issue for issue in issues if issue.startswith(slide_prefixes)]
+    return global_issues + slide_issues
+
+
+def _prepare_analysis_context(
+    analysis: Optional[ScriptAnalysis],
+    slide_plan: SlidePlanItem,
+) -> str:
+    if analysis is None:
+        return "{}"
+
+    selected_block_indices = set(slide_plan.source_block_indices)
+    selected_blocks = [
+        block
+        for block in analysis.blocks
+        if not selected_block_indices or block.index in selected_block_indices
+    ]
+    context = {
+        "topic": analysis.topic,
+        "objective": analysis.objective,
+        "key_messages": analysis.key_messages,
+        "facts": analysis.facts,
+        "blocks": [block.model_dump() for block in selected_blocks],
+    }
+    return json.dumps(context, ensure_ascii=False)
 
 
 def _prepare_slides_info(presentation: PresentationData) -> str:
@@ -225,7 +354,10 @@ def _prepare_new_slide_info(presentation: PresentationData, layout_type: Optiona
     """Информация о новом слайде"""
     if not layout_type:
         return "Новый слайд без указания макета"
-    layout = next((l for l in presentation.layouts if l.name == layout_type), None)
+    layout = next(
+        (candidate for candidate in presentation.layouts if candidate.name == layout_type),
+        None,
+    )
     if not layout:
         return f"Новый слайд с layout_type={layout_type} (макет не найден)"
     placeholders_desc = []

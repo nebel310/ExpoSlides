@@ -1,13 +1,6 @@
 import asyncio
-import uuid
+import logging
 from pathlib import Path
-
-from lxml import etree
-from pptx import Presentation as PPTXPresentation
-from pptx.enum.dml import MSO_COLOR_TYPE
-from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pptx.oxml.ns import qn
-from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 
 from app.models.presentation import (
     BBox,
@@ -28,6 +21,14 @@ from app.models.presentation import (
     ThemeInfo,
 )
 from app.parsers.base import BaseParser
+from lxml import etree
+from pptx import Presentation as PPTXPresentation
+from pptx.enum.dml import MSO_COLOR_TYPE
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+from pptx.oxml.ns import qn
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -71,7 +72,8 @@ class PPTXParser(BaseParser):
         """Извлекает данные одного слайда"""
         elements: list[SlideElement] = []
         for shape in slide.shapes:
-            elem = cls._parse_shape(shape, theme)
+            element_id = f"slide-{index}-shape-{shape.shape_id}"
+            elem = cls._parse_shape(shape, theme, element_id)
             if elem:
                 elements.append(elem)
 
@@ -85,7 +87,7 @@ class PPTXParser(BaseParser):
                     + 1
                 )
             except Exception:
-                pass
+                logger.debug("Не удалось определить layout_index слайда %d", index, exc_info=True)
 
         background = cls._parse_background(slide.background)
 
@@ -115,7 +117,8 @@ class PPTXParser(BaseParser):
         placeholders: list[PlaceholderInfo] = []
 
         for shape in layout.shapes:
-            elem = cls._parse_shape(shape, theme)
+            element_id = f"layout-{index}-shape-{shape.shape_id}"
+            elem = cls._parse_shape(shape, theme, element_id)
             if elem:
                 elements.append(elem)
                 if shape.is_placeholder:
@@ -145,7 +148,12 @@ class PPTXParser(BaseParser):
         )
 
     @classmethod
-    def _parse_shape(cls, shape, theme: ThemeInfo | None) -> SlideElement | None:
+    def _parse_shape(
+        cls,
+        shape,
+        theme: ThemeInfo | None,
+        element_id: str,
+    ) -> SlideElement | None:
         """Извлекает данные из одной фигуры слайда"""
         bbox = BBox(
             left=shape.left,
@@ -161,7 +169,7 @@ class PPTXParser(BaseParser):
             if parent is not None:
                 z_order = list(parent).index(shape._element)
         except Exception:
-            pass
+            logger.debug("Не удалось определить z-order элемента %s", element_id, exc_info=True)
 
         placeholder_type = None
         placeholder_idx = None
@@ -174,7 +182,7 @@ class PPTXParser(BaseParser):
         if shape.has_table:
             table = cls._parse_table(shape.table)
             return SlideElement(
-                id=str(uuid.uuid4()),
+                id=element_id,
                 type=ElementType.TABLE,
                 bbox=bbox,
                 z_order=z_order,
@@ -189,7 +197,7 @@ class PPTXParser(BaseParser):
                 shape.text_frame, placeholder_type, theme
             )
             return SlideElement(
-                id=str(uuid.uuid4()),
+                id=element_id,
                 type=ElementType.TEXT,
                 bbox=bbox,
                 z_order=z_order,
@@ -206,7 +214,7 @@ class PPTXParser(BaseParser):
                 alt_text=getattr(shape, "alt_text", None),
             )
             return SlideElement(
-                id=str(uuid.uuid4()),
+                id=element_id,
                 type=ElementType.IMAGE,
                 bbox=bbox,
                 z_order=z_order,
@@ -217,7 +225,7 @@ class PPTXParser(BaseParser):
             )
 
         return SlideElement(
-            id=str(uuid.uuid4()),
+            id=element_id,
             type=ElementType.OTHER,
             bbox=bbox,
             z_order=z_order,
@@ -320,7 +328,7 @@ class PPTXParser(BaseParser):
                         if alt_key:
                             color_hex = theme.colors.get(alt_key)
         except Exception:
-            pass
+            logger.debug("Не удалось извлечь цвет текста", exc_info=True)
 
         # Жирность, курсив, подчёркивание
         bold = bool(font.bold)
@@ -388,7 +396,7 @@ class PPTXParser(BaseParser):
                 # Получение картинки фона не реализовано
                 pass
         except Exception:
-            pass
+            logger.debug("Не удалось извлечь фон", exc_info=True)
 
         if color_hex or image_path or fill_type:
             return SlideBackground(
@@ -403,13 +411,23 @@ class PPTXParser(BaseParser):
         """Извлекает тему презентации (цвета и шрифты)"""
         try:
             # Пробуем получить тему через презентацию (надёжнее)
-            theme_part = prs.part.part_related_by(RT.THEME)
-            if theme_part is None and prs.slide_masters:
-                theme_part = prs.slide_masters[0].part.part_related_by(RT.THEME)
+            theme_part = None
+            try:
+                theme_part = prs.part.part_related_by(RT.THEME)
+            except KeyError:
+                pass
+
+            if theme_part is None:
+                for slide_master in prs.slide_masters:
+                    try:
+                        theme_part = slide_master.part.part_related_by(RT.THEME)
+                        break
+                    except KeyError:
+                        continue
             if theme_part is None:
                 return None
 
-            theme_element = theme_part._element
+            theme_element = etree.fromstring(theme_part.blob)
             nsmap = {
                 "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
             }
@@ -447,7 +465,7 @@ class PPTXParser(BaseParser):
             if colors or fonts:
                 return ThemeInfo(colors=colors, fonts=fonts)
         except Exception:
-            pass
+            logger.debug("Не удалось извлечь тему презентации", exc_info=True)
         return None
 
     @classmethod

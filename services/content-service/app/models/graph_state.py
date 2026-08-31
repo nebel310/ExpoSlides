@@ -1,24 +1,41 @@
 from typing import Optional
-from pydantic import BaseModel, Field
+
 from app.models.presentation import PresentationData
 from app.models.request import GenerationSettings
+from pydantic import BaseModel, Field
 
 
+class ScriptBlock(BaseModel):
+    """Последовательный смысловой блок исходного текста."""
+
+    index: int = Field(default=1, ge=1)
+    heading: str = ""
+    summary: str = ""
+    key_points: list[str] = Field(default_factory=list)
+    facts: list[str] = Field(default_factory=list)
 
 
 class ScriptAnalysis(BaseModel):
-    """Анализ скрипта"""
-    blocks: list[dict] = Field(default_factory=list)
+    """Структурированное, основанное на источнике представление скрипта."""
+
+    topic: str = ""
+    audience: str = ""
+    objective: str = ""
+    blocks: list[ScriptBlock] = Field(default_factory=list)
     key_messages: list[str] = Field(default_factory=list)
+    facts: list[str] = Field(default_factory=list)
 
 
 class SlidePlanItem(BaseModel):
     """План слайда"""
+
     template_slide_index: Optional[int] = None
     layout_type: Optional[str] = None
     title: str = ""
     content: str = ""
     purpose: str = ""
+    key_message: str = ""
+    source_block_indices: list[int] = Field(default_factory=list)
 
 
 class SlidePlan(BaseModel):

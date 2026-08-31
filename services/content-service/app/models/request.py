@@ -1,15 +1,15 @@
 from typing import Optional
+
 from pydantic import BaseModel, Field
-
-
 
 
 class GenerationSettings(BaseModel):
     """Настройки генерации"""
-    language: str = "ru"
-    tone: str = "professional"
-    complexity: str = "medium"
-    max_slides: Optional[int] = None
+
+    language: str = Field(default="ru", min_length=2, max_length=16)
+    tone: str = Field(default="professional", min_length=2, max_length=32)
+    complexity: str = Field(default="medium", min_length=2, max_length=32)
+    max_slides: Optional[int] = Field(default=None, ge=1)
     strict_user_mapping: bool = True
 
 

@@ -1,11 +1,12 @@
 import asyncio
 import json
 import logging
-from typing import Type, TypeVar, Optional
-from pydantic import BaseModel
+from typing import Optional, Type, TypeVar
+
+from app.config import settings
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
-from app.config import settings
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ class LLMClient:
             max_tokens=settings.llm_max_tokens,
         )
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             response = await loop.run_in_executor(None, self.client.chat, chat)
             content = response.choices[0].message.content
@@ -70,8 +71,8 @@ class LLMClient:
             except json.JSONDecodeError as e:
                 logger.error("Ошибка парсинга JSON: %s", e)
                 return None
-        except Exception as e:
-            logger.error("Ошибка вызова LLM: %s", e)
+        except Exception:
+            logger.exception("Ошибка вызова LLM")
             return None
 
 llm_client = LLMClient()
