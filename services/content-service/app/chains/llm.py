@@ -28,6 +28,7 @@ class LLMClient:
             credentials=settings.llm_api_key,
             scope=settings.llm_scope,
             verify_ssl_certs=False,
+            timeout=settings.llm_api_timeout
         )
 
     async def generate_json(self, prompt: str, model: Type[T], strict: bool = True) -> T:

@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     llm_api_key: str = ""
+    llm_api_timeout: int = 180
     llm_model: str = "GigaChat-2-Max"
     llm_base_url: str = "https://api.giga.chat/v1"
     llm_scope: str = "GIGACHAT_API_PERS"
