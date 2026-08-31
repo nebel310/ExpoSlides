@@ -1,13 +1,12 @@
 from typing import Optional
+
 from app.models.presentation import (
-    PresentationData,
-    SlideData,
-    PlaceholderData,
     LayoutData,
     LayoutPlaceholderData,
+    PlaceholderData,
+    PresentationData,
+    SlideData,
 )
-
-
 
 
 class PresentationParser:

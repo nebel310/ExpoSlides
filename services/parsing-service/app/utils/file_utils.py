@@ -1,8 +1,6 @@
 from pathlib import Path
 
 
-
-
 async def file_exists(path: str | Path) -> bool:
     """Проверяет существование файла"""
     return Path(path).is_file()

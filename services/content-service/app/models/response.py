@@ -1,8 +1,6 @@
 from typing import Optional
+
 from pydantic import BaseModel, Field
-from app.models.graph_state import GeneratedSlideContent
-
-
 
 
 class SlideContentResponse(BaseModel):

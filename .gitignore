@@ -41,4 +41,5 @@ Thumbs.db
 *.pptx
 output.json
 *.json
+!evals/generation_cases.json
 *.txt

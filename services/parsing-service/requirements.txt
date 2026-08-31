@@ -1,1 +1,4 @@
-u
+# Для service-only установки. Точные версии зафиксированы в ../../uv.lock.
+lxml
+pydantic>=2
+python-pptx

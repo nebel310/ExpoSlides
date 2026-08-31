@@ -4,8 +4,6 @@ from pathlib import Path
 from app.parsers.pptx_parser import PPTXParser
 
 
-
-
 async def main() -> None:
     """Точка входа для локального тестирования парсера"""
     parser = PPTXParser
