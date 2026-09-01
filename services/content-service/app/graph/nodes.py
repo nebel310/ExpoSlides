@@ -3,7 +3,12 @@ import logging
 from typing import Any, Dict, Optional, Tuple
 
 from app.chains.llm import llm_client
-from app.chains.prompts import ANALYZE_SCRIPT_PROMPT, GENERATE_CONTENT_PROMPT, PLAN_SLIDES_PROMPT
+from app.chains.prompts import (
+    ANALYZE_SCRIPT_PROMPT,
+    FEW_SHOT_ANALYSIS_EXAMPLE,
+    GENERATE_CONTENT_PROMPT,
+    PLAN_SLIDES_PROMPT,
+)
 from app.config import settings as service_settings
 from app.errors import AnalysisValidationError, ContentValidationError, PlanValidationError
 from app.models.graph_state import (
@@ -31,6 +36,7 @@ async def analyze_script(state: ContentGraphState) -> dict[str, Any]:
         language=state.settings.language,
         complexity=state.settings.complexity,
     )
+    base_prompt += FEW_SHOT_ANALYSIS_EXAMPLE
     prompt = base_prompt
     for attempt in range(service_settings.llm_response_retries + 1):
         analysis = await llm_client.generate_json(prompt, ScriptAnalysis)
