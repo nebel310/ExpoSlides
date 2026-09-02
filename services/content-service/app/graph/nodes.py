@@ -5,12 +5,16 @@ from typing import Any, Dict, Optional, Tuple
 from app.chains.llm import llm_client
 from app.chains.prompts import (
     ANALYZE_SCRIPT_PROMPT,
-    FEW_SHOT_ANALYSIS_EXAMPLE,
     GENERATE_CONTENT_PROMPT,
     PLAN_SLIDES_PROMPT,
 )
 from app.config import settings as service_settings
-from app.errors import AnalysisValidationError, ContentValidationError, PlanValidationError
+from app.errors import (
+    AnalysisValidationError,
+    ContentValidationError,
+    PlanValidationError,
+    UserMappingValidationError,
+)
 from app.models.graph_state import (
     ContentGraphState,
     GeneratedSlideContent,
@@ -21,28 +25,40 @@ from app.models.graph_state import (
 from app.models.presentation import PresentationData, SlideData
 from app.models.request import GenerationSettings
 from app.utils.grounding import extract_fact_tokens, find_unsupported_claim_markers
-from app.utils.validation import ContentValidator
+from app.utils.validation import (
+    LIST_PLACEHOLDER_TYPES,
+    ContentValidator,
+    contains_blank_list_items,
+    contains_manual_list_markers,
+)
 
 logger = logging.getLogger(__name__)
-
-
 
 
 async def analyze_script(state: ContentGraphState) -> dict[str, Any]:
     """Анализ скрипта"""
     logger.info("=== Запуск узла analyze_script ===")
+    mapping_issues = _user_mapping_validation_issues(
+        state.user_mapping,
+        state.presentation,
+    )
+    if mapping_issues:
+        raise UserMappingValidationError(
+            "Пользовательская разметка не прошла проверку: "
+            + "; ".join(mapping_issues)
+        )
+
     base_prompt = ANALYZE_SCRIPT_PROMPT.format(
         script=state.script,
         language=state.settings.language,
         complexity=state.settings.complexity,
     )
-    base_prompt += FEW_SHOT_ANALYSIS_EXAMPLE
     prompt = base_prompt
     for attempt in range(service_settings.llm_response_retries + 1):
         analysis = await llm_client.generate_json(prompt, ScriptAnalysis)
         issues = _analysis_grounding_issues(state.script, analysis)
         if not issues:
-            logger.info("Результат анализа: %s", analysis.model_dump())
+            logger.debug("Результат анализа: %s", analysis.model_dump())
             return {"analysis": analysis}
         if attempt >= service_settings.llm_response_retries:
             raise AnalysisValidationError(
@@ -82,10 +98,12 @@ async def plan_slides(state: ContentGraphState) -> dict[str, Any]:
             state.analysis,
             state.settings.max_slides,
             state.script,
+            state.user_mapping,
+            state.settings.strict_user_mapping,
         )
         if not issues:
             normalized_plan = _normalize_plan(plan, state.presentation)
-            logger.info("План слайдов (после нормализации): %s", normalized_plan.model_dump())
+            logger.debug("План слайдов (после нормализации): %s", normalized_plan.model_dump())
             return {"plan": normalized_plan}
         if attempt >= service_settings.llm_response_retries:
             raise PlanValidationError("План не прошёл проверку: " + "; ".join(issues))
@@ -130,11 +148,11 @@ async def generate_content(state: ContentGraphState) -> dict[str, Any]:
         )
         if slide_idx is not None:
             content[slide_idx] = slide_content
-            logger.info("Слайд %d сгенерирован: %s", slide_idx, slide_content.model_dump())
+            logger.debug("Слайд %d сгенерирован: %s", slide_idx, slide_content.model_dump())
         else:
             logger.warning("Для элемента плана %s не удалось определить индекс слайда", slide_plan)
 
-    logger.info("Итоговый контент: %s", {k: v.model_dump() for k, v in content.items()})
+    logger.debug("Итоговый контент: %s", {k: v.model_dump() for k, v in content.items()})
     return {"content": content}
 
 
@@ -212,6 +230,11 @@ async def _generate_slide_content(
             property_schema["maxLength"] = ph.max_length
         schema["properties"][key] = property_schema
         schema["required"].append(key)
+
+    if not schema["required"]:
+        raise ContentValidationError(
+            f"Слайд {slide.index} не содержит текстовых placeholder для генерации"
+        )
 
     logger.debug("Схема для слайда %d: %s", slide.index, json.dumps(schema, ensure_ascii=False))
 
@@ -303,9 +326,12 @@ def _plan_validation_issues(
     analysis: Optional[ScriptAnalysis],
     max_slides: Optional[int],
     source_text: str,
+    user_mapping: Optional[dict] = None,
+    strict_user_mapping: bool = False,
 ) -> list[str]:
     issues = []
     available_indices = {slide.index for slide in presentation.slides}
+    slide_by_index = {slide.index: slide for slide in presentation.slides}
     planned_indices = [item.template_slide_index for item in plan.slides]
     slide_limit = max_slides or len(available_indices)
     if len(plan.slides) > slide_limit:
@@ -315,6 +341,28 @@ def _plan_validation_issues(
         issues.append("нет слайдов шаблона с индексами: " + ", ".join(map(str, invalid_indices)))
     if len(planned_indices) != len(set(planned_indices)):
         issues.append("template_slide_index должен быть уникальным")
+
+    if strict_user_mapping and user_mapping:
+        mapped_indices = {int(slide_index) for slide_index in user_mapping}
+        missing_mapped_indices = sorted(mapped_indices - set(planned_indices))
+        if missing_mapped_indices:
+            issues.append(
+                "план не использовал слайды из пользовательской разметки: "
+                + ", ".join(map(str, missing_mapped_indices))
+            )
+
+    unfillable_indices = sorted(
+        {
+            slide_index
+            for slide_index in planned_indices
+            if slide_index in slide_by_index and not slide_by_index[slide_index].placeholders
+        }
+    )
+    if unfillable_indices:
+        issues.append(
+            "слайды не содержат текстовых placeholder: "
+            + ", ".join(map(str, unfillable_indices))
+        )
 
     available_block_indices = {block.index for block in analysis.blocks} if analysis else set()
     referenced_block_indices = {
@@ -347,6 +395,69 @@ def _plan_validation_issues(
             "план содержит неподтверждённые оценки или сравнения: "
             + ", ".join(unsupported_claims)
         )
+    return issues
+
+
+def _user_mapping_validation_issues(
+    user_mapping: Optional[dict],
+    presentation: PresentationData,
+) -> list[str]:
+    if not user_mapping:
+        return []
+
+    slides_by_key = {str(slide.index): slide for slide in presentation.slides}
+    issues = []
+    for slide_key, raw_mapping in user_mapping.items():
+        if not isinstance(slide_key, str) or slide_key not in slides_by_key:
+            issues.append(f"неизвестный индекс слайда: {slide_key!r}")
+            continue
+        if not isinstance(raw_mapping, dict):
+            issues.append(f"слайд {slide_key}: разметка должна быть JSON-объектом")
+            continue
+
+        slide = slides_by_key[slide_key]
+        placeholders_by_key = {
+            str(placeholder.idx) if placeholder.idx is not None else placeholder.name: placeholder
+            for placeholder in slide.placeholders
+            if placeholder.idx is not None or placeholder.name is not None
+        }
+        for placeholder_key, value in raw_mapping.items():
+            if not isinstance(placeholder_key, str) or placeholder_key not in placeholders_by_key:
+                issues.append(
+                    f"слайд {slide_key}: неизвестный placeholder {placeholder_key!r}"
+                )
+                continue
+            if not isinstance(value, str) or not value.strip():
+                issues.append(
+                    f"слайд {slide_key}, placeholder {placeholder_key!r}: "
+                    "требуется непустая строка"
+                )
+                continue
+            max_length = placeholders_by_key[placeholder_key].max_length
+            if max_length is not None and len(value) > max_length:
+                issues.append(
+                    f"слайд {slide_key}, placeholder {placeholder_key!r}: "
+                    f"текст длиннее максимума ({len(value)} > {max_length})"
+                )
+
+            placeholder_type = placeholders_by_key[placeholder_key].placeholder_type
+            if (
+                placeholder_type in LIST_PLACEHOLDER_TYPES
+                and contains_manual_list_markers(value)
+            ):
+                issues.append(
+                    f"слайд {slide_key}, placeholder {placeholder_key!r}: "
+                    "текст содержит ручные маркеры списка"
+                )
+            if (
+                placeholder_type in LIST_PLACEHOLDER_TYPES
+                and contains_blank_list_items(value)
+            ):
+                issues.append(
+                    f"слайд {slide_key}, placeholder {placeholder_key!r}: "
+                    "список содержит пустые строки"
+                )
+
     return issues
 
 

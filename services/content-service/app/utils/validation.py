@@ -1,3 +1,5 @@
+import re
+
 from app.models.graph_state import GeneratedSlideContent, ValidationReport
 from app.models.presentation import PresentationData
 from app.utils.grounding import (
@@ -5,6 +7,15 @@ from app.utils.grounding import (
     extract_significant_words,
     find_unsupported_claim_markers,
 )
+
+LIST_PLACEHOLDER_TYPES = {
+    "BODY",
+    "OBJECT",
+    "TEXT",
+    "VERTICAL_BODY",
+    "VERTICAL_OBJECT",
+}
+LIST_MARKER_PATTERN = re.compile(r"^(?:[-+–—*•]\s+|\d+[.)]\s+)")
 
 
 class ContentValidator:
@@ -20,15 +31,41 @@ class ContentValidator:
     ) -> ValidationReport:
         """Проверка полноты и длины текста"""
         issues = []
+        expected_slide_indices = (
+            slide_indices
+            if slide_indices is not None
+            else {slide.index for slide in presentation.slides}
+        )
+        unexpected_slide_indices = sorted(content.keys() - expected_slide_indices)
+        if unexpected_slide_indices:
+            issues.append(
+                "Контент содержит слайды вне плана: "
+                + ", ".join(map(str, unexpected_slide_indices))
+            )
+
         for slide in presentation.slides:
             if slide_indices is not None and slide.index not in slide_indices:
                 continue
 
             slide_content = content.get(slide.index)
             if not slide_content:
-                if any(ph.text for ph in slide.placeholders):
+                if slide.placeholders:
                     issues.append(f"Слайд {slide.index}: нет сгенерированного контента")
                 continue
+
+            available_keys = {
+                str(placeholder.idx)
+                if placeholder.idx is not None
+                else placeholder.name
+                for placeholder in slide.placeholders
+                if placeholder.idx is not None or placeholder.name is not None
+            }
+            unexpected_keys = sorted(slide_content.placeholders.keys() - available_keys)
+            if unexpected_keys:
+                issues.append(
+                    f"Слайд {slide.index}: неизвестные placeholders: "
+                    + ", ".join(unexpected_keys)
+                )
 
             for ph in slide.placeholders:
                 generated_text = None
@@ -36,18 +73,35 @@ class ContentValidator:
                     generated_text = slide_content.placeholders.get(str(ph.idx))
                 if generated_text is None and ph.name:
                     generated_text = slide_content.placeholders.get(ph.name)
-                if generated_text is None and ph.placeholder_type:
-                    generated_text = slide_content.placeholders.get(ph.placeholder_type)
 
                 if generated_text is None or not generated_text.strip():
-                    if ph.text:
-                        issues.append(f"Слайд {slide.index}, placeholder {ph.name or ph.idx}: не заполнен")
+                    issues.append(
+                        f"Слайд {slide.index}, placeholder {ph.name or ph.idx}: не заполнен"
+                    )
                     continue
 
                 if ph.max_length and len(generated_text) > ph.max_length:
                     issues.append(
                         f"Слайд {slide.index}, placeholder {ph.name or ph.idx}: текст длиннее максимума "
                         f"({len(generated_text)} > {ph.max_length})"
+                    )
+
+                if (
+                    ph.placeholder_type in LIST_PLACEHOLDER_TYPES
+                    and contains_manual_list_markers(generated_text)
+                ):
+                    issues.append(
+                        f"Слайд {slide.index}, placeholder {ph.name or ph.idx}: "
+                        "текст содержит ручные маркеры списка; нужны только строки пунктов"
+                    )
+
+                if (
+                    ph.placeholder_type in LIST_PLACEHOLDER_TYPES
+                    and contains_blank_list_items(generated_text)
+                ):
+                    issues.append(
+                        f"Слайд {slide.index}, placeholder {ph.name or ph.idx}: "
+                        "список содержит пустые строки"
                     )
 
         if source_text:
@@ -92,3 +146,13 @@ class ContentValidator:
 
         ok = len(issues) == 0
         return ValidationReport(ok=ok, issues=issues)
+
+
+def contains_manual_list_markers(text: str) -> bool:
+    lines = [line.lstrip() for line in text.splitlines() if line.strip()]
+    return bool(lines) and any(LIST_MARKER_PATTERN.match(line) for line in lines)
+
+
+def contains_blank_list_items(text: str) -> bool:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return "\n" in normalized and any(not line.strip() for line in normalized.split("\n"))

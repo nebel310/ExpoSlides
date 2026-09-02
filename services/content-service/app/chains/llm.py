@@ -28,7 +28,7 @@ class LLMClient:
             credentials=settings.llm_api_key,
             scope=settings.llm_scope,
             verify_ssl_certs=False,
-            timeout=settings.llm_api_timeout
+            timeout=settings.llm_api_timeout,
         )
 
     async def generate_json(self, prompt: str, model: Type[T], strict: bool = True) -> T:
@@ -87,6 +87,11 @@ class LLMClient:
 
     async def _request_json(self, prompt: str, schema: dict, strict: bool) -> dict:
         """Внутренний метод: отправка запроса и парсинг JSON"""
+        if not settings.llm_api_key.strip():
+            raise LLMGenerationError(
+                "LLM_API_KEY не настроен. Укажите ключ GigaChat в окружении или .env"
+            )
+
         logger.debug("Отправка запроса в LLM. Модель: %s, strict: %s", settings.llm_model, strict)
         logger.debug("Промпт:\n%s", prompt)
         logger.debug("Схема:\n%s", json.dumps(schema, ensure_ascii=False, indent=2))
@@ -117,7 +122,8 @@ class LLMClient:
         except _InvalidLLMResponse:
             raise
         except Exception as error:
-            logger.exception("Ошибка вызова LLM")
+            logger.error("Ошибка вызова LLM: %s", error)
+            logger.debug("Детали ошибки вызова LLM", exc_info=True)
             raise LLMGenerationError(f"LLM request failed: {error}") from error
 
     @staticmethod

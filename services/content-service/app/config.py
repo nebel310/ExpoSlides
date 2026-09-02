@@ -8,16 +8,16 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     llm_api_key: str = ""
-    llm_api_timeout: int = 180
+    llm_api_timeout: int = Field(default=180, gt=0)
     llm_model: str = "GigaChat-2-Max"
     llm_base_url: str = "https://api.giga.chat/v1"
     llm_scope: str = "GIGACHAT_API_PERS"
     llm_temperature: float = 0.2
-    llm_max_tokens: int = 8192
+    llm_max_tokens: int = Field(default=8192, gt=0)
     llm_response_retries: int = Field(default=2, ge=0, le=5)
     content_validation_retries: int = Field(default=2, ge=0, le=5)
     log_file: str = "content_service.log"
-    log_level: str = "DEBUG"
+    log_level: str = "INFO"
 
 settings = Settings()
 

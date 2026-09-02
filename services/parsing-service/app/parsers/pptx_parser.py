@@ -25,6 +25,7 @@ from lxml import etree
 from pptx import Presentation as PPTXPresentation
 from pptx.enum.dml import MSO_COLOR_TYPE
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.enum.text import PP_ALIGN
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from pptx.oxml.ns import qn
 
@@ -50,12 +51,21 @@ class PPTXParser(BaseParser):
         theme = cls._extract_theme(prs)
 
         layouts: list[LayoutInfo] = []
+        layout_indices_by_partname: dict[str, int] = {}
         for idx, layout in enumerate(prs.slide_layouts, start=1):
+            layout_indices_by_partname[str(layout.part.partname)] = idx
             layouts.append(cls._parse_layout(layout, idx, theme))
 
         slides: list[Slide] = []
         for idx, slide in enumerate(prs.slides, start=1):
-            slides.append(cls._parse_slide(slide, idx, theme))
+            slides.append(
+                cls._parse_slide(
+                    slide,
+                    idx,
+                    theme,
+                    layout_indices_by_partname,
+                )
+            )
 
         return Presentation(
             source_path=str(path),
@@ -68,7 +78,13 @@ class PPTXParser(BaseParser):
         )
 
     @classmethod
-    def _parse_slide(cls, slide, index: int, theme: ThemeInfo | None) -> Slide:
+    def _parse_slide(
+        cls,
+        slide,
+        index: int,
+        theme: ThemeInfo | None,
+        layout_indices_by_partname: dict[str, int],
+    ) -> Slide:
         """Извлекает данные одного слайда"""
         elements: list[SlideElement] = []
         for shape in slide.shapes:
@@ -79,15 +95,8 @@ class PPTXParser(BaseParser):
 
         layout_index = None
         if slide.slide_layout:
-            try:
-                layout_index = (
-                    list(slide.slide_layout.part.package.presentation.slide_layouts).index(
-                        slide.slide_layout
-                    )
-                    + 1
-                )
-            except Exception:
-                logger.debug("Не удалось определить layout_index слайда %d", index, exc_info=True)
+            layout_partname = str(slide.slide_layout.part.partname)
+            layout_index = layout_indices_by_partname.get(layout_partname)
 
         background = cls._parse_background(slide.background)
 
@@ -342,10 +351,10 @@ class PPTXParser(BaseParser):
         alignment = None
         if paragraph.alignment is not None:
             alignment_map = {
-                0: "left",  # PP_ALIGN.LEFT
-                1: "center",
-                2: "right",
-                3: "justify",
+                PP_ALIGN.LEFT: "left",
+                PP_ALIGN.CENTER: "center",
+                PP_ALIGN.RIGHT: "right",
+                PP_ALIGN.JUSTIFY: "justify",
             }
             alignment = alignment_map.get(paragraph.alignment, None)
 

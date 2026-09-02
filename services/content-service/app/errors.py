@@ -16,3 +16,7 @@ class PlanValidationError(GenerationPipelineError):
 
 class ContentValidationError(GenerationPipelineError):
     """Generated slide content remains invalid after all retries."""
+
+
+class UserMappingValidationError(GenerationPipelineError):
+    """User-provided slide or placeholder mapping violates the file contract."""

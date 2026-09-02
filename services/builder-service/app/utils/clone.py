@@ -1,18 +1,16 @@
-import copy
-from pptx import Presentation as PPTXPresentation
-from pptx.util import Inches
+from typing import NoReturn
+
+from app.errors import SlideReuseNotSupportedError
 
 
-
-
-def clone_slide(source_prs, target_prs, source_slide):
-    """Клонирует слайд из source_prs в target_prs"""
-    slide_layout = source_slide.slide_layout
-    new_slide = target_prs.slides.add_slide(slide_layout)
-
-    # копируем все shape-элементы
-    for shape in source_slide.shapes:
-        el = copy.deepcopy(shape._element)
-        new_slide.shapes._spTree.append(el)
-
-    return new_slide
+def clone_slide(
+    source_prs: object,
+    target_prs: object,
+    source_slide: object,
+) -> NoReturn:
+    """Явно отклоняет небезопасное клонирование без переноса relationships."""
+    del source_prs, target_prs, source_slide
+    raise SlideReuseNotSupportedError(
+        "Повторное использование слайда шаблона не поддерживается: "
+        "для клонирования нужен полный перенос relationships"
+    )
