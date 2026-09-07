@@ -4,13 +4,17 @@ import grpc
 
 from file_service_pb2_grpc import add_FileServiceServicer_to_server
 
+from .database import create_tables
 from .minio_storage import MinioStorage
 from .service import FileService
+
+
 
 
 async def serve() -> None:
     """Запустить gRPC сервер"""
     await MinioStorage.ensure_bucket()
+    await create_tables()
 
     server = grpc.aio.server()
     add_FileServiceServicer_to_server(FileService(), server)

@@ -9,18 +9,21 @@ service FileService {
     rpc DownloadFile(DownloadFileRequest) returns (DownloadFileResponse);
     rpc DeleteFile(DeleteFileRequest) returns (google.protobuf.Empty);
     rpc HealthCheck(google.protobuf.Empty) returns (HealthCheckResponse);
+    rpc GetFileInfo(GetFileInfoRequest) returns (GetFileInfoResponse);
 }
 
 message UploadFileRequest {
     string filename = 1;
     bytes content = 2;
     string content_type = 3;
+    string task_id = 4;
 }
 
 message UploadFileResponse {
     string file_id = 1;
     string original_name = 2;
     int64 size = 3;
+    string file_type = 4;
 }
 
 message DownloadFileRequest {
@@ -35,6 +38,20 @@ message DownloadFileResponse {
 
 message DeleteFileRequest {
     string file_id = 1;
+}
+
+message GetFileInfoRequest {
+    string file_id = 1;
+}
+
+message GetFileInfoResponse {
+    string file_id = 1;
+    string original_name = 2;
+    string object_key = 3;
+    string content_type = 4;
+    int64 size = 5;
+    string task_id = 6;
+    string created_at = 7;
 }
 
 message HealthCheckResponse {
