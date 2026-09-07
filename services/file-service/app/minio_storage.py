@@ -35,7 +35,7 @@ class MinioStorage:
             await client.__aexit__(None, None, None)
 
     @classmethod
-    async def save_file(cls, file_content: bytes, object_name: str, content_type: str) -> None:
+    async def save_file(cls, file_content: bytes, object_name: str, content_type: str, metadata: dict | None = None) -> None:
         """Сохранить файл в MinIO"""
         client = await cls._get_client()
         try:
@@ -44,6 +44,7 @@ class MinioStorage:
                 Key=object_name,
                 Body=file_content,
                 ContentType=content_type,
+                Metadata=metadata or {},
             )
         finally:
             await client.__aexit__(None, None, None)

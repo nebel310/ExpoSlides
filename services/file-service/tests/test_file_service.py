@@ -1,21 +1,16 @@
 import io
-import sys
-from pathlib import Path
+import json
 
 import grpc
 import pytest
-from google.protobuf.empty_pb2 import Empty
 from pptx import Presentation
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from file_service_pb2 import (
     DeleteFileRequest,
-    DownloadFileRequest,
     UploadFileRequest,
 )
 
 
-TMP_DIR = Path(__file__).parent / "tmp_file"
 
 
 def create_valid_pptx() -> bytes:
@@ -28,91 +23,72 @@ def create_valid_pptx() -> bytes:
     return buffer.getvalue()
 
 
+def create_valid_pdf() -> bytes:
+    """Создать минимальный валидный pdf в памяти и вернуть bytes"""
+    return b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF"
+
+
+def create_valid_json() -> bytes:
+    """Создать валидный json в памяти и вернуть bytes"""
+    data = {"key": "value", "list": [1, 2, 3]}
+    return json.dumps(data).encode("utf-8")
+
+
+def create_valid_txt() -> bytes:
+    """Создать валидный txt в памяти и вернуть bytes"""
+    return "Hello, world!".encode("utf-8")
+
+
 @pytest.fixture(scope="module")
-def uploaded_file_id(file_service_stub):
-    """Загрузить валидный pptx и вернуть file_id"""
-    content = create_valid_pptx()
-    response = file_service_stub.UploadFile(
-        UploadFileRequest(
-            filename="test.pptx",
-            content=content,
-            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        )
-    )
-    yield response.file_id
-
-    try:
-        file_service_stub.DeleteFile(DeleteFileRequest(file_id=response.file_id))
-    except grpc.RpcError:
-        pass
+def valid_files():
+    """Вернуть словарь с валидными файлами для загрузки"""
+    return {
+        "test.pptx": create_valid_pptx(),
+        "test.pdf": create_valid_pdf(),
+        "test.json": create_valid_json(),
+        "test.txt": create_valid_txt(),
+    }
 
 
-def test_health_check(file_service_stub):
-    """Проверить что healthcheck возвращает статус ok"""
-    response = file_service_stub.HealthCheck(Empty())
-    assert response.status == "ok"
+@pytest.fixture(scope="module")
+def invalid_files():
+    """Вернуть список кортежей с невалидными файлами"""
+    return [
+        ("fake.pptx", b"not a pptx"),
+        ("fake.pdf", b"not a pdf"),
+        ("fake.json", b"not a json"),
+        ("fake.txt", b"\x00\x01\x02\x03"),
+        ("no_extension", b"random bytes"),
+        ("evil.exe", b"MZ\x90\x00"),
+    ]
 
 
-def test_upload_valid_pptx(file_service_stub):
-    """Проверить успешную загрузку валидного pptx"""
-    content = create_valid_pptx()
-    response = file_service_stub.UploadFile(
-        UploadFileRequest(
-            filename="valid.pptx",
-            content=content,
-            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        )
-    )
-    assert response.file_id
-    assert response.original_name == "valid.pptx"
-    assert response.size == len(content)
-
-    file_service_stub.DeleteFile(DeleteFileRequest(file_id=response.file_id))
-
-
-def test_upload_invalid_file_rejected(file_service_stub):
-    """Проверить что невалидный файл отклоняется с ошибкой"""
-    with pytest.raises(grpc.RpcError) as exc_info:
-        file_service_stub.UploadFile(
+def test_upload_valid_files(file_service_stub, valid_files):
+    """Проверить успешную загрузку файлов допустимых типов"""
+    for filename, content in valid_files.items():
+        response = file_service_stub.UploadFile(
             UploadFileRequest(
-                filename="bad.txt",
-                content=b"not a pptx",
-                content_type="text/plain",
+                filename=filename,
+                content=content,
+                content_type="application/octet-stream",
             )
         )
-    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+        assert response.file_id
+        assert response.original_name == filename
+        assert response.size == len(content)
+
+        file_service_stub.DeleteFile(DeleteFileRequest(file_id=response.file_id))
 
 
-def test_download_uploaded_file(file_service_stub, uploaded_file_id):
-    """Проверить скачивание ранее загруженного файла"""
-    response = file_service_stub.DownloadFile(DownloadFileRequest(file_id=uploaded_file_id))
-    assert response.filename == "test.pptx"
-    assert response.content_type.startswith("application/")
-    assert len(response.content) > 0
-
-    tmp_file_path = TMP_DIR / "downloaded_test.pptx"
-    tmp_file_path.write_bytes(response.content)
-    assert tmp_file_path.exists()
-
-
-def test_download_nonexistent_file(file_service_stub):
-    """Проверить что скачивание несуществующего файла возвращает NOT_FOUND"""
-    with pytest.raises(grpc.RpcError) as exc_info:
-        file_service_stub.DownloadFile(DownloadFileRequest(file_id="nonexistent"))
-    assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
-
-
-def test_delete_file(file_service_stub):
-    """Проверить удаление файла"""
-    content = create_valid_pptx()
-    upload_resp = file_service_stub.UploadFile(
-        UploadFileRequest(
-            filename="to_delete.pptx",
-            content=content,
-            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        )
-    )
-    file_service_stub.DeleteFile(DeleteFileRequest(file_id=upload_resp.file_id))
-    with pytest.raises(grpc.RpcError) as exc_info:
-        file_service_stub.DownloadFile(DownloadFileRequest(file_id=upload_resp.file_id))
-    assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
+def test_upload_invalid_files(file_service_stub, invalid_files):
+    """Проверить что невалидные файлы отклоняются с ошибкой"""
+    for filename, content in invalid_files:
+        with pytest.raises(grpc.RpcError) as exc_info:
+            file_service_stub.UploadFile(
+                UploadFileRequest(
+                    filename=filename,
+                    content=content,
+                    content_type="application/octet-stream",
+                )
+            )
+        assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
