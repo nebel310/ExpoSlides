@@ -45,3 +45,5 @@ output.json
 !TODO.txt
 !evals/generation_cases.json
 *.txt
+**/*_pb2.py
+**/*_pb2_grpc.py

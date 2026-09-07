@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Presentation parsing, content generation, and building services"
 requires-python = ">=3.11,<3.14"
 dependencies = [
+    "aiobotocore>=3.9.0",
     "gigachat",
+    "grpcio>=1.83.1",
+    "grpcio-tools>=1.83.1",
     "langgraph",
     "lxml",
     "pydantic>=2",

@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package file_service;
+
+import "google/protobuf/empty.proto";
+
+service FileService {
+    rpc UploadFile(UploadFileRequest) returns (UploadFileResponse);
+    rpc DownloadFile(DownloadFileRequest) returns (DownloadFileResponse);
+    rpc DeleteFile(DeleteFileRequest) returns (google.protobuf.Empty);
+    rpc HealthCheck(google.protobuf.Empty) returns (HealthCheckResponse);
+}
+
+message UploadFileRequest {
+    string filename = 1;
+    bytes content = 2;
+    string content_type = 3;
+}
+
+message UploadFileResponse {
+    string file_id = 1;
+    string original_name = 2;
+    int64 size = 3;
+}
+
+message DownloadFileRequest {
+    string file_id = 1;
+}
+
+message DownloadFileResponse {
+    bytes content = 1;
+    string filename = 2;
+    string content_type = 3;
+}
+
+message DeleteFileRequest {
+    string file_id = 1;
+}
+
+message HealthCheckResponse {
+    string status = 1;
+}

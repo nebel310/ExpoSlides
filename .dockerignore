@@ -42,3 +42,5 @@ docker-compose.yaml
 # Temporary files
 *.tmp
 *.bak
+**/*_pb2.py
+**/*_pb2_grpc.py
