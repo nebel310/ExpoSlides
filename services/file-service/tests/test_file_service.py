@@ -26,6 +26,16 @@ def create_valid_pptx() -> bytes:
     return buffer.getvalue()
 
 
+def create_valid_pptx_with_text(text: str) -> bytes:
+    """Создать валидный pptx с заданным текстом заголовка"""
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[0])
+    slide.shapes.title.text = text
+    buffer = io.BytesIO()
+    prs.save(buffer)
+    return buffer.getvalue()
+
+
 def create_valid_pdf() -> bytes:
     """Создать минимальный валидный pdf в памяти и вернуть bytes"""
     return b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF"
@@ -80,6 +90,7 @@ def test_upload_valid_files(file_service_stub, valid_files):
         assert response.original_name == filename
         assert response.size == len(content)
         assert response.file_type in ("pptx", "pdf", "json", "txt")
+        assert response.version == 1
 
         file_service_stub.DeleteFile(DeleteFileRequest(file_id=response.file_id))
 
@@ -117,7 +128,8 @@ def test_upload_and_get_file_info(file_service_stub):
         assert info.original_name == "info_test.pptx"
         assert info.size == len(content)
         assert info.task_id == task_id
-        assert info.object_key.endswith(".pptx")
+        assert info.version == 1
+        assert f"/v1.pptx" in info.object_key
     finally:
         file_service_stub.DeleteFile(DeleteFileRequest(file_id=file_id))
 
@@ -174,5 +186,139 @@ def test_download_after_upload(file_service_stub):
         download = file_service_stub.DownloadFile(DownloadFileRequest(file_id=file_id))
         assert download.filename == "download_test.pptx"
         assert download.content == content
+        assert download.version == 1
     finally:
         file_service_stub.DeleteFile(DeleteFileRequest(file_id=file_id))
+
+
+def test_upload_new_version(file_service_stub):
+    """Проверить что загрузка с существующим file_id создаёт новую версию"""
+    content_v1 = create_valid_pptx_with_text("Version 1")
+    content_v2 = create_valid_pptx_with_text("Version 2")
+
+    response_v1 = file_service_stub.UploadFile(
+        UploadFileRequest(
+            filename="versioned.pptx",
+            content=content_v1,
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+    )
+    file_id = response_v1.file_id
+    assert response_v1.version == 1
+
+    try:
+        response_v2 = file_service_stub.UploadFile(
+            UploadFileRequest(
+                filename="versioned.pptx",
+                content=content_v2,
+                content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                file_id=file_id,
+            )
+        )
+        assert response_v2.file_id == file_id
+        assert response_v2.version == 2
+
+        info_latest = file_service_stub.GetFileInfo(GetFileInfoRequest(file_id=file_id, version=0))
+        assert info_latest.version == 2
+
+        info_v1 = file_service_stub.GetFileInfo(GetFileInfoRequest(file_id=file_id, version=1))
+        assert info_v1.version == 1
+
+        info_v2 = file_service_stub.GetFileInfo(GetFileInfoRequest(file_id=file_id, version=2))
+        assert info_v2.version == 2
+        assert info_v1.object_key != info_v2.object_key
+    finally:
+        file_service_stub.DeleteFile(DeleteFileRequest(file_id=file_id))
+
+
+def test_download_specific_version(file_service_stub):
+    """Проверить скачивание конкретной версии файла"""
+    content_v1 = create_valid_pptx_with_text("Content V1")
+    content_v2 = create_valid_pptx_with_text("Content V2")
+
+    response_v1 = file_service_stub.UploadFile(
+        UploadFileRequest(
+            filename="dl_versioned.pptx",
+            content=content_v1,
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+    )
+    file_id = response_v1.file_id
+
+    try:
+        file_service_stub.UploadFile(
+            UploadFileRequest(
+                filename="dl_versioned.pptx",
+                content=content_v2,
+                content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                file_id=file_id,
+            )
+        )
+
+        download_v1 = file_service_stub.DownloadFile(DownloadFileRequest(file_id=file_id, version=1))
+        assert download_v1.version == 1
+        assert download_v1.content == content_v1
+
+        download_v2 = file_service_stub.DownloadFile(DownloadFileRequest(file_id=file_id, version=2))
+        assert download_v2.version == 2
+        assert download_v2.content == content_v2
+
+        download_latest = file_service_stub.DownloadFile(DownloadFileRequest(file_id=file_id, version=0))
+        assert download_latest.version == 2
+        assert download_latest.content == content_v2
+    finally:
+        file_service_stub.DeleteFile(DeleteFileRequest(file_id=file_id))
+
+
+def test_upload_new_version_for_nonexistent_file(file_service_stub):
+    """Проверить что загрузка с несуществующим file_id отклоняется"""
+    content = create_valid_pptx()
+    fake_file_id = str(uuid.uuid4())
+    with pytest.raises(grpc.RpcError) as exc_info:
+        file_service_stub.UploadFile(
+            UploadFileRequest(
+                filename="fake.pptx",
+                content=content,
+                content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                file_id=fake_file_id,
+            )
+        )
+    assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
+
+
+def test_delete_removes_all_versions(file_service_stub):
+    """Проверить что удаление убирает все версии файла"""
+    content_v1 = create_valid_pptx_with_text("V1")
+    content_v2 = create_valid_pptx_with_text("V2")
+
+    response_v1 = file_service_stub.UploadFile(
+        UploadFileRequest(
+            filename="multi_version.pptx",
+            content=content_v1,
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+    )
+    file_id = response_v1.file_id
+
+    file_service_stub.UploadFile(
+        UploadFileRequest(
+            filename="multi_version.pptx",
+            content=content_v2,
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            file_id=file_id,
+        )
+    )
+
+    file_service_stub.DeleteFile(DeleteFileRequest(file_id=file_id))
+
+    with pytest.raises(grpc.RpcError) as exc_info:
+        file_service_stub.GetFileInfo(GetFileInfoRequest(file_id=file_id, version=0))
+    assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
+
+    with pytest.raises(grpc.RpcError) as exc_info:
+        file_service_stub.GetFileInfo(GetFileInfoRequest(file_id=file_id, version=1))
+    assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
+
+    with pytest.raises(grpc.RpcError) as exc_info:
+        file_service_stub.GetFileInfo(GetFileInfoRequest(file_id=file_id, version=2))
+    assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND

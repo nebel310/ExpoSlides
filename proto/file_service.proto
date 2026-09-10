@@ -17,6 +17,7 @@ message UploadFileRequest {
     bytes content = 2;
     string content_type = 3;
     string task_id = 4;
+    string file_id = 5;
 }
 
 message UploadFileResponse {
@@ -24,16 +25,19 @@ message UploadFileResponse {
     string original_name = 2;
     int64 size = 3;
     string file_type = 4;
+    int32 version = 5;
 }
 
 message DownloadFileRequest {
     string file_id = 1;
+    int32 version = 2;
 }
 
 message DownloadFileResponse {
     bytes content = 1;
     string filename = 2;
     string content_type = 3;
+    int32 version = 4;
 }
 
 message DeleteFileRequest {
@@ -42,6 +46,7 @@ message DeleteFileRequest {
 
 message GetFileInfoRequest {
     string file_id = 1;
+    int32 version = 2;
 }
 
 message GetFileInfoResponse {
@@ -52,6 +57,7 @@ message GetFileInfoResponse {
     int64 size = 5;
     string task_id = 6;
     string created_at = 7;
+    int32 version = 8;
 }
 
 message HealthCheckResponse {
