@@ -6,7 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from app.file_service_client import FileServiceClient
+from app.grpc.file_service_client import FileServiceClient
 from app.kafka.schemas import TaskCreatedPayload, TaskParsedPayload
 from app.models.presentation import Presentation
 from app.parsers.pptx_parser import PPTXParser

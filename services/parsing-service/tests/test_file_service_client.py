@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import file_service_pb2
-from app.file_service_client import FileServiceClient
+from app.grpc.file_service_client import FileServiceClient
 
 
 @pytest.fixture
