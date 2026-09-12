@@ -68,3 +68,9 @@ class FileServiceClient:
             request.file_id = file_id
         response = await stub.UploadFile(request)
         return response.file_id
+    
+    async def delete_file(self, file_id: str) -> None:
+        """Удаляет файл и все его версии из file-service"""
+        stub = self._get_stub()
+        request = file_service_pb2.DeleteFileRequest(file_id=file_id)
+        await stub.DeleteFile(request)
