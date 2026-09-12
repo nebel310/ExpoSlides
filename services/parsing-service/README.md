@@ -1,22 +1,22 @@
 # Parser Service
 
-Микросервис парсинга PPTX-шаблонов. Читает `task.created` из Kafka, скачивает PPTX из file-service, разбирает структуру и публикует `task.parsed` со ссылкой на `structure.json`. При технической ошибке публикует `task.failed` со `stage = "parser"`.
+Микросервис парсинга PPTX-шаблонов. Читает задачи из Kafka, разбирает шаблон и публикует структуру презентации обратно в Kafka. Общается с file-service по gRPC, отдаёт gRPC `HealthCheck`.
 
 ## Что делает
 
-- Слушает топик `task.created`, валидирует конверт и payload через Pydantic.
-- Скачивает PPTX-шаблон из file-service по gRPC (`DownloadFile`, `version = 0`).
-- Прогоняет PPTX через `PPTXParser` и получает модель `Presentation`.
-- Загружает `structure.json` обратно в file-service (`UploadFile`) и получает `structure_file_id`.
-- Публикует `task.parsed` с payload `{ structure_file_id, template_file_id, script_file_id }`.
-- При технической ошибке (файл не найден, парсинг упал) публикует `task.failed` и коммитит offset.
-- Отдаёт gRPC `HealthCheck` для проверки живости.
+- Подписан на топик `task.created`, читает задачи на парсинг.
+- Скачивает PPTX-шаблон из file-service по `template_file_id`.
+- Разбирает шаблон и сохраняет структуру (`structure.json`) в file-service.
+- Публикует `task.parsed` с `structure_file_id`, чтобы следующие сервисы пайплайна могли продолжить работу.
+- При технической ошибке публикует `task.failed` со `stage = "parser"`.
 
-## Kafka
+## Kafka API
 
-Брокер: `kafka:9092` (KRaft). Сериализация — JSON.
+Порт не используется. Брокер: `kafka:9092` (KRaft). Сериализация — JSON.
 
-Общий конверт сообщения:
+### Общий конверт сообщения
+
+Все сообщения в пайплайне ходят в едином конверте:
 
 ```json
 {
@@ -29,21 +29,30 @@
 
 ### Топики
 
-| Топик | Роль | Payload |
+| Топик | Роль сервиса | Payload |
 |---|---|---|
-| `task.created` | consumer | `{ "template_file_id", "script_file_id" }` |
-| `task.parsed` | producer | `{ "structure_file_id", "template_file_id", "script_file_id" }` |
+| `task.created` | consumer | `{ "template_file_id": "uuid", "script_file_id": "uuid" }` |
+| `task.parsed` | producer | `{ "structure_file_id": "uuid", "template_file_id": "uuid", "script_file_id": "uuid" }` |
 | `task.failed` | producer | `{ "stage": "parser", "reason": "..." }` |
 
-### Логика обработки
+### Поведение
 
-1. Прочитать сообщение, распарсить в `MessageEnvelope` → `TaskCreatedPayload`.
-2. Если конверт или payload невалидны — залогировать, коммитнуть offset, не публиковать ничего.
-3. Вызвать `ParserPipeline.process(task_id, payload)`.
-4. Успех — публикация в `task.parsed`, коммит offset.
-5. Технический фейл — публикация в `task.failed` со `stage = "parser"`, коммит offset.
+- Читает `task.created`, валидирует конверт и payload.
+- Скачивает PPTX-шаблон (`template_file_id`, последняя версия) из file-service.
+- Разбирает шаблон, загружает `structure.json` в file-service (`content_type = "application/json"`, `task_id` пробрасывается).
+- Публикует `task.parsed` с `structure_file_id`, `template_file_id`, `script_file_id`.
+- `attempt` из входящего конверта пробрасывается в исходящий без изменений.
+- Коммитит offset после публикации результата (или после `task.failed`).
 
-Бизнес-ретраев у сервиса нет — ретраи живут на стороне evaluation/content.
+### Ошибки
+
+- **Технический фейл** (шаблон не найден, PPTX битый, file-service недоступен) — публикует `task.failed` со `stage = "parser"` и непустым `reason`, затем коммитит offset.
+- **Невалидный конверт или payload** — логирует и коммитит offset без публикации. Ретраев нет.
+- **Бизнес-провалов нет.** Парсинг либо отработал, либо упал технически.
+
+### Идемпотентность
+
+Не гарантируется. При повторной доставке одного и того же `task_id` сервис обработает задачу ещё раз и загрузит новую версию `structure.json`. Это безопасно: file-service поддерживает версионирование.
 
 ## gRPC API
 
@@ -55,36 +64,55 @@
 
 ## Взаимодействие с file-service
 
-Сервис использует gRPC-клиент `FileServiceClient` (см. `proto/file_service.proto` в корне проекта).
+Сервис — gRPC-клиент file-service (контракт `proto/file_service.proto` в корне проекта). Использует:
 
 - `DownloadFile(file_id, version=0)` — скачать PPTX-шаблон.
-- `UploadFile(filename, content, content_type, task_id, file_id?)` — залить `structure.json`.
-- `DeleteFile(file_id)` — используется в интеграционных/e2e тестах для очистки.
+- `UploadFile(filename="structure.json", content, content_type="application/json", task_id, file_id=None)` — залить структуру.
 
-Между сервисами передаются только `file_id`, байты по Kafka не ходят.
+Между сервисами ходят только `file_id`, байты по Kafka не передаются.
 
-## Правила обработки PPTX
+## Формат structure.json
 
-Парсер `PPTXParser` (на базе `python-pptx` + `lxml`) извлекает:
-
-- слайды, layout'ы, тему (цвета и шрифты);
-- текстовые элементы, параграфы, runs и их стили;
-- таблицы, изображения, placeholder'ы;
-- z-order, фон, заметки к слайдам.
-
-На выходе — модель `Presentation` (см. `app/models/presentation.py`), которая сериализуется в `structure.json` со схемой:
+Результат парсинга — сериализованная модель `Presentation`:
 
 ```
 {
   "source_path": "...",
   "file_type": "pptx",
-  "slide_width": ...,
-  "slide_height": ...,
-  "slides": [...],
+  "slide_width": 9144000,
+  "slide_height": 6858000,
+  "slides": [
+    {
+      "index": 1,
+      "layout_type": "title",
+      "layout_name": "Title Slide",
+      "layout_index": 1,
+      "placeholder_type": "TITLE",
+      "elements": [
+        {
+          "id": "slide-1-shape-2",
+          "type": "text",
+          "bbox": { "left": 0, "top": 0, "width": 0, "height": 0 },
+          "z_order": 1,
+          "placeholder_type": "TITLE",
+          "placeholder_idx": 0,
+          "placeholder_name": "Title 1",
+          "text": {
+            "paragraphs": [...],
+            "full_text": "..."
+          }
+        }
+      ],
+      "background": { "fill_type": "1", "color_hex": "FFFFFF" },
+      "notes": null
+    }
+  ],
   "layouts": [...],
-  "theme": {...}
+  "theme": { "colors": {...}, "fonts": {...} }
 }
 ```
+
+Извлекаются: слайды, layout'ы, тема (цвета и шрифты), текстовые элементы с параграфами/runs и стилями, таблицы, изображения, placeholder'ы, z-order, фон, заметки.
 
 ## Переменные окружения
 
@@ -119,7 +147,7 @@ E2E_TOPIC_TASK_FAILED=task.failed
 docker compose up -d --build
 ```
 
-Сервис доступен на `localhost:50052` (gRPC healthcheck). Kafka — `localhost:9093` (EXTERNAL listener).
+Сервис доступен на `localhost:50052` (gRPC healthcheck). Kafka — `localhost:9093` (EXTERNAL listener для подключения с хоста).
 
 ## Генерация gRPC-кода
 
@@ -144,19 +172,9 @@ uv run pytest services/parsing-service/tests -v
 
 Требуют запущенных контейнеров `kafka`, `file-service`, `minio`, `postgres` для integration/e2e. Unit-тесты проходят без инфраструктуры.
 
-- `tests/test_schemas.py` — Pydantic-модели Kafka-конверта.
-- `tests/test_file_service_client.py` — gRPC-клиент file-service (моки).
-- `tests/test_producer.py` — Kafka producer (мок `AIOKafkaProducer`).
-- `tests/test_pipeline.py` — пайплайн download → parse → upload (моки file-client).
-- `tests/test_consumer.py` — обработка сообщений `task.created` (моки pipeline/producer).
-- `tests/test_grpc_server.py` — gRPC healthcheck и lifecycle.
-- `tests/test_main.py` — CLI-режим парсинга.
-- `tests/integration/` — реальный file-service, реальный PPTX → валидный `structure.json`.
-- `tests/e2e/` — полный путь через Kafka: `task.created` → `task.parsed` / `task.failed`.
-
 ## Пример использования (Python)
 
-Публикация задачи в `task.created`:
+Публикация задачи на парсинг:
 
 ```python
 import asyncio
@@ -183,6 +201,34 @@ async def main():
 asyncio.run(main())
 ```
 
+Подписка на результат:
+
+```python
+import asyncio
+import json
+from aiokafka import AIOKafkaConsumer
+
+async def main():
+    consumer = AIOKafkaConsumer(
+        "task.parsed",
+        "task.failed",
+        bootstrap_servers="localhost:9093",
+        group_id="my-service",
+        auto_offset_reset="latest",
+    )
+    await consumer.start()
+    try:
+        async for message in consumer:
+            data = json.loads(message.value.decode())
+            if data["task_id"] == "task-123":
+                print(message.topic, data["payload"])
+                break
+    finally:
+        await consumer.stop()
+
+asyncio.run(main())
+```
+
 Healthcheck parser-service:
 
 ```python
@@ -195,7 +241,7 @@ stub = parser_service_pb2_grpc.ParserServiceStub(channel)
 print(stub.HealthCheck(empty_pb2.Empty()).status)
 ```
 
-CLI-режим для ручного парсинга файла:
+CLI-режим для ручной отладки парсинга без Kafka (только внутри контейнера/локально):
 
 ```bash
 uv run python -m app.main --input-pptx test.pptx --output-json output.json
