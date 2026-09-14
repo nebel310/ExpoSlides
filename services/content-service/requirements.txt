@@ -1,6 +1,0 @@
-# Для service-only установки. Точные версии зафиксированы в ../../uv.lock.
-gigachat
-langgraph
-pydantic>=2
-pydantic-settings
-python-dotenv
