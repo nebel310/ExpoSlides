@@ -4,20 +4,73 @@ import argparse
 import asyncio
 import json
 import logging
+import signal
 from pathlib import Path
 from uuid import uuid4
 
-from app.config import setup_logging
+from app.config import settings, setup_logging
 from app.errors import ContentValidationError
 from app.graph.builder import build_graph
+from app.grpc.file_service_client import FileServiceClient
+from app.grpc.server import GrpcServer
+from app.kafka.consumer import KafkaConsumer
+from app.kafka.producer import KafkaProducer
 from app.models.graph_state import ContentGraphState
 from app.models.request import GenerationSettings
 from app.models.response import GenerationResponse, SlideContentResponse
+from app.services.content_pipeline import ContentPipeline
 from app.utils.presentation_parser import PresentationParser
 
 logger = logging.getLogger(__name__)
 
 SERVICE_ROOT = Path(__file__).resolve().parent.parent
+
+
+async def serve() -> None:
+    """Запустить gRPC-сервер и Kafka consumer в одном asyncio-loop"""
+    setup_logging()
+
+    file_client = FileServiceClient()
+    producer = KafkaProducer()
+    pipeline = ContentPipeline(file_client=file_client, producer=producer)
+    consumer = KafkaConsumer(handler=pipeline.handle)
+    grpc_server = GrpcServer(port=settings.content_service_port)
+
+    stop_event = asyncio.Event()
+
+    def _request_stop(*_: object) -> None:
+        """Обработать сигнал остановки"""
+        logger.info("Получен сигнал остановки")
+        stop_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _request_stop)
+        except NotImplementedError:
+            signal.signal(sig, _request_stop)
+
+    logger.info("Запуск content-service")
+    await file_client.start()
+    await producer.start()
+    await grpc_server.start()
+    await consumer.start()
+
+    consumer_task = asyncio.create_task(consumer.run(), name="kafka-consumer")
+
+    try:
+        await stop_event.wait()
+    finally:
+        logger.info("Остановка content-service")
+        consumer_task.cancel()
+        try:
+            await consumer_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        await consumer.stop()
+        await grpc_server.stop()
+        await producer.stop()
+        await file_client.stop()
 
 
 async def run(
@@ -27,7 +80,7 @@ async def run(
     generation_settings: GenerationSettings | None = None,
     user_mapping: dict | None = None,
 ) -> Path:
-    """Сгенерировать и атомарно сохранить контент презентации."""
+    """Сгенерировать и атомарно сохранить контент презентации"""
     template_path = Path(template_json).expanduser().resolve()
     script_path = Path(script_file).expanduser().resolve()
     output_path = Path(output_json).expanduser().resolve()
@@ -109,7 +162,8 @@ async def run(
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Сгенерировать контент для PPTX-шаблона")
+    parser = argparse.ArgumentParser(description="Content-service: Kafka pipeline или CLI-генерация")
+    parser.add_argument("--cli", action="store_true", help="Запустить CLI-режим генерации")
     parser.add_argument("--template-json", type=Path, default=SERVICE_ROOT / "template.json")
     parser.add_argument("--script", type=Path, default=SERVICE_ROOT / "script.txt")
     parser.add_argument(
@@ -137,9 +191,9 @@ def _load_user_mapping(path: Path | None) -> dict | None:
     return mapping
 
 
-def main(argv: list[str] | None = None) -> int:
+def _run_cli(args: argparse.Namespace) -> int:
+    """Запустить CLI-режим ручной генерации"""
     setup_logging()
-    args = _parse_args(argv)
     try:
         if (
             args.user_mapping is not None
@@ -169,6 +223,18 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("Content-service завершился с ошибкой: %s", error)
         logger.debug("Детали ошибки content-service", exc_info=True)
         return 1
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Точка входа: CLI-режим или Kafka-пайплайн"""
+    args = _parse_args(argv)
+    if args.cli:
+        return _run_cli(args)
+    try:
+        asyncio.run(serve())
+    except KeyboardInterrupt:
+        return 0
     return 0
 
 
