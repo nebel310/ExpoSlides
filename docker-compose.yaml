@@ -108,6 +108,39 @@ services:
         condition: service_healthy
       file-service:
         condition: service_started
+  
+  content-service:
+    build:
+      context: .
+      dockerfile: services/content-service/Dockerfile
+    container_name: content-service
+    ports:
+      - "${CONTENT_SERVICE_PORT}:50053"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_GROUP_ID: content-service
+      KAFKA_TOPIC_TASK_PARSED: task.parsed
+      KAFKA_TOPIC_TASK_CONTENT_READY: task.content_ready
+      KAFKA_TOPIC_TASK_CONTENT_RETRY: task.content_retry
+      KAFKA_TOPIC_TASK_FAILED: task.failed
+      FILE_SERVICE_GRPC_HOST: file-service
+      FILE_SERVICE_GRPC_PORT: 50051
+      CONTENT_SERVICE_PORT: 50053
+      CONTENT_VALIDATION_RETRIES: ${CONTENT_VALIDATION_RETRIES}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_API_TIMEOUT: ${LLM_API_TIMEOUT}
+      LLM_MODEL: ${LLM_MODEL}
+      LLM_BASE_URL: ${LLM_BASE_URL}
+      LLM_SCOPE: ${LLM_SCOPE}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS}
+      LLM_RESPONSE_RETRIES: ${LLM_RESPONSE_RETRIES}
+      LOG_LEVEL: ${LOG_LEVEL}
+    depends_on:
+      kafka:
+        condition: service_healthy
+      file-service:
+        condition: service_started
 
 volumes:
   minio_data:
