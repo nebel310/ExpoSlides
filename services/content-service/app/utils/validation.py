@@ -137,11 +137,16 @@ class ContentValidator:
             source_words = extract_significant_words(source_text)
             generated_words = extract_significant_words(generated_text)
             if len(source_words) >= 4:
-                overlap_ratio = len(source_words & generated_words) / len(source_words)
-                if overlap_ratio < 0.15:
+                shared_words = source_words & generated_words
+                # Проверяем привязку результата к источнику, а не долю слов длинного
+                # доклада, перенесённых в краткие слайды. Минимум общих слов защищает
+                # от пустого результата и повторения одного тематического термина.
+                overlap_ratio = len(shared_words) / max(1, len(generated_words))
+                if len(shared_words) < 4 or overlap_ratio < 0.30:
                     issues.append(
                         "Текст слайдов недостаточно связан с исходным материалом "
-                        f"(совпадение значимых слов {overlap_ratio:.0%})"
+                        f"(совпадение значимых слов результата {overlap_ratio:.0%}, "
+                        f"общих слов {len(shared_words)})"
                     )
 
         ok = len(issues) == 0

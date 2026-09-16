@@ -108,6 +108,7 @@ def test_run_pipeline_invokes_isolated_services_and_publishes_valid_pptx(
 
     content_command, _, content_env = calls[1]
     assert content_command[3:] == [
+        "--cli",
         "--template-json",
         _option(content_command, "--template-json"),
         "--script",

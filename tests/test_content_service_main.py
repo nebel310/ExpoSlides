@@ -135,6 +135,7 @@ def test_content_cli_returns_nonzero_without_writing_error_payload(
 
     exit_code = main.main(
         [
+            "--cli",
             "--template-json",
             str(tmp_path / "missing.json"),
             "--script",
@@ -161,6 +162,7 @@ def test_content_cli_cannot_overwrite_user_mapping(
 
     exit_code = main.main(
         [
+            "--cli",
             "--template-json",
             str(tmp_path / "missing.json"),
             "--script",

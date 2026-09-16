@@ -145,6 +145,7 @@ async def generate_content(state: ContentGraphState) -> dict[str, Any]:
             slide_issues,
             state.analysis,
             state.settings,
+            source_text=state.script,
         )
         if slide_idx is not None:
             content[slide_idx] = slide_content
@@ -186,6 +187,7 @@ async def _generate_slide_content(
     issues: list[str],
     analysis: Optional[ScriptAnalysis],
     settings: GenerationSettings,
+    source_text: str | None = None,
 ) -> Tuple[Optional[int], GeneratedSlideContent]:
     """Генерация контента для одного слайда"""
     slide = None
@@ -210,6 +212,7 @@ async def _generate_slide_content(
         language=settings.language,
         tone=settings.tone,
         complexity=settings.complexity,
+        source_text=source_text or "",
     )
     base_prompt = prompt
     logger.debug("Промпт для _generate_slide_content:\n%s", prompt)
@@ -225,7 +228,7 @@ async def _generate_slide_content(
         key = str(ph.idx) if ph.idx is not None else ph.name
         if key is None:
             continue
-        property_schema = {"type": "string"}
+        property_schema = {"type": "string", "minLength": 1}
         if ph.max_length:
             property_schema["maxLength"] = ph.max_length
         schema["properties"][key] = property_schema
@@ -540,7 +543,9 @@ def _prepare_slides_info(presentation: PresentationData) -> str:
         placeholders_desc = []
         for ph in slide.placeholders:
             placeholders_desc.append(
-                f"  - {ph.name or ph.idx} (type={ph.placeholder_type}, max_len={ph.max_length or 'нет'})"
+                f"  - {ph.name or ph.idx} (type={ph.placeholder_type}, "
+                f"max_len={ph.max_length or 'нет'}), "
+                f"пример: {json.dumps(ph.text[:160], ensure_ascii=False)}"
             )
         infos.append(
             f"Слайд {slide.index}: layout={slide.layout_name}, type={slide.layout_type}\n"

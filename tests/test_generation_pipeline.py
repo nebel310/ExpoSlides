@@ -50,6 +50,27 @@ def _plan_item(graph_state, template_slide_index: int = 1):
     )
 
 
+def test_planner_receives_template_examples_and_capacity(service_importer) -> None:
+    nodes, _, presentation, _ = _load_content_modules(service_importer)
+    template = presentation.PresentationData(
+        slides=[presentation.SlideData(
+            index=14,
+            placeholders=[presentation.PlaceholderData(
+                idx=28,
+                placeholder_type="BODY",
+                text="Подробная сводка " + "текст " * 100,
+                max_length=500,
+            )],
+        )],
+    )
+    info = nodes._prepare_slides_info(template)
+    assert "Слайд 14" in info
+    assert "max_len=500" in info
+    assert "Подробная сводка" in info
+    assert "текст " * 100 not in info
+    assert "не подряд по индексам" in nodes.PLAN_SLIDES_PROMPT
+
+
 def test_plan_validation_rejects_invalid_indices_duplicates_and_limit(service_importer) -> None:
     nodes, graph_state, presentation, _ = _load_content_modules(service_importer)
     template = presentation.PresentationData(
@@ -327,15 +348,19 @@ def test_generation_prompt_is_grounded_and_schema_has_length_limit(
             issues=["Слайд 1, placeholder Title: текст длиннее максимума"],
             analysis=analysis,
             settings=request.GenerationSettings(tone="concise"),
+            source_text="Оригинал: выручка выросла на 18%",
         )
     )
 
     assert result.placeholders["0"] == "Выручка выросла на 18%"
     assert "Выручка выросла на 18%" in captured["prompt"]
     assert "concise" in captured["prompt"]
+    assert "<SOURCE_SCRIPT>\nОригинал: выручка выросла на 18%\n</SOURCE_SCRIPT>" in captured["prompt"]
     assert "текст длиннее максимума" in captured["prompt"]
     assert "не добавляй дефисы" in captured["prompt"]
     assert captured["schema"]["properties"]["0"]["maxLength"] == 32
+    assert captured["schema"]["properties"]["0"]["minLength"] == 1
+    assert "Каждый placeholder должен содержать непустой текст" in captured["prompt"]
 
 
 def test_generation_rejects_slide_without_text_placeholders(service_importer) -> None:
@@ -391,7 +416,9 @@ def test_retry_preserves_valid_slides(monkeypatch, service_importer) -> None:
         issues,
         analysis,
         settings,
+        source_text=None,
     ):
+        assert source_text == "Текст"
         regenerated_indices.append(slide_plan.template_slide_index)
         return (
             slide_plan.template_slide_index,

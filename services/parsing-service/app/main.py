@@ -47,6 +47,10 @@ async def run_cli(input_pptx: str | Path, output_json: str | Path) -> Path:
     return output_path
 
 
+# Совместимость с публичным файловым API до добавления сетевого режима.
+run = run_cli
+
+
 async def run_service() -> None:
     """Запускает gRPC-сервер, Kafka producer и consumer в одном loop"""
     file_client = FileServiceClient(

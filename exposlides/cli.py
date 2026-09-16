@@ -294,6 +294,7 @@ def run_pipeline(
             _validate_template_json(template_json)
 
             content_arguments = [
+                "--cli",
                 "--template-json",
                 str(template_json),
                 "--script",
