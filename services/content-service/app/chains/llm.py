@@ -1,17 +1,23 @@
 import asyncio
 import json
 import logging
+import os
 import re
+import ssl
+from pathlib import Path
 from typing import Any, Type, TypeVar
 
+import httpx
 from app.config import settings
 from app.errors import LLMGenerationError
 from gigachat import GigaChat
-from gigachat.exceptions import ServerError
+from gigachat.exceptions import ResponseError, ServerError
 from gigachat.models import Chat, Messages, MessagesRole
 from pydantic import BaseModel, ValidationError
 
 logger = logging.getLogger(__name__)
+_FAST_CLIENT_CLOSE_TIMEOUT = 5.0
+_TRANSIENT_HTTP_STATUSES = {429, 500, 502, 503, 504}
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -287,14 +293,26 @@ class LLMClient:
             normalized = "\n".join(lines).strip()
 
         try:
-            return json.loads(normalized)
+            return json.loads(normalized, object_pairs_hook=LLMClient._unique_object_pairs)
         except json.JSONDecodeError:
             repaired_prefixes = LLMClient._strip_non_json_line_prefixes(normalized)
             without_trailing_commas = LLMClient._remove_trailing_commas(repaired_prefixes)
             try:
-                return json.loads(without_trailing_commas)
+                return json.loads(
+                    without_trailing_commas, object_pairs_hook=LLMClient._unique_object_pairs,
+                )
             except json.JSONDecodeError as repaired_error:
                 raise _InvalidLLMResponse(f"invalid JSON: {repaired_error}") from repaired_error
+
+    @staticmethod
+    def _unique_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        """Не допускает молчаливую потерю полей при повторе ключа в любом объекте."""
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise _InvalidLLMResponse("duplicate JSON object keys")
+            result[key] = value
+        return result
 
     @staticmethod
     def _remove_trailing_commas(content: str) -> str:
@@ -404,4 +422,165 @@ class LLMClient:
                     f"property {key!r} must be one of {allowed_values}"
                 )
 
+class InvalidLLMGenerationError(LLMGenerationError):
+    """Ответ получен; общий бюджет pipeline может разрешить его исправление."""
+
+    invalid_response = True
+
+    def __init__(self, message: str, response_data: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.response_data = response_data
+
+
+class FastLLMClient(LLMClient):
+    """Отменяемые запросы с ограниченным повтором временных HTTP-ошибок."""
+
+    def __init__(self) -> None:
+        # Lazy init сохраняет независимость стандартного клиента и его настроек.
+        self._client: GigaChat | None = None
+
+    @property
+    def client(self) -> GigaChat:
+        if self._client is None:
+            tls_options: dict[str, Any] = {}
+            ca_bundle_file = os.environ.get("GIGACHAT_CA_BUNDLE_FILE")
+            if ca_bundle_file:
+                tls_options["ca_bundle_file"] = ca_bundle_file
+            else:
+                context = ssl.create_default_context()
+                context.load_verify_locations(
+                    cafile=Path(__file__).resolve().parents[1]
+                    / "certificates"
+                    / "russian_trusted_root_ca.pem"
+                )
+                tls_options["ssl_context"] = context
+            self._client = GigaChat(
+                base_url=settings.llm_base_url,
+                credentials=settings.llm_api_key,
+                scope=settings.llm_scope,
+                timeout=settings.llm_fast_api_timeout,
+                max_retries=0,
+                verify_ssl_certs=True,
+                **tls_options,
+            )
+        return self._client
+
+    async def generate_json(self, prompt: str, model: Type[T], strict: bool = True) -> T:
+        data = await self.generate_json_object(prompt, model.model_json_schema(), strict)
+        try:
+            return model.model_validate(data)
+        except ValidationError as error:
+            raise InvalidLLMGenerationError(
+                f"LLM response for {model.__name__} is invalid", data
+            ) from error
+
+    async def generate_json_with_schema(
+        self, prompt: str, schema: dict, strict: bool = True
+    ) -> dict:
+        data = await self.generate_json_object(prompt, schema, strict)
+        try:
+            self._validate_flat_object_schema(data, schema)
+            return data
+        except _InvalidLLMResponse as error:
+            raise InvalidLLMGenerationError("LLM response does not match its schema", data) from error
+
+    async def generate_json_object(
+        self, prompt: str, schema: dict, strict: bool = True, *, model: str | None = None
+    ) -> dict[str, Any]:
+        """Получить JSON-объект без отбрасывания частично корректных полей."""
+        if not settings.llm_api_key.strip():
+            raise LLMGenerationError(
+                "LLM_API_KEY не настроен. Укажите ключ GigaChat в окружении или .env"
+            )
+        request_model = model or settings.llm_fast_model
+        chat = Chat(
+            model=request_model,
+            messages=[Messages(role=MessagesRole.USER, content=prompt)],
+            response_format={
+                "type": "json_schema",
+                "schema": self._schema_for_generation(schema),
+                "strict": strict,
+            },
+            temperature=settings.llm_temperature,
+            max_tokens=settings.llm_max_tokens,
+        )
+        logger.info("Быстрый запрос LLM. Модель: %s", request_model)
+        logger.debug("Промпт:\n%s", prompt)
+        try:
+            async with asyncio.timeout(settings.llm_fast_api_timeout):
+                response = await self._achat_with_transient_retry(chat)
+        except Exception as error:
+            logger.debug("Ошибка быстрого запроса LLM", exc_info=True)
+            raise LLMGenerationError(
+                f"Fast LLM request failed ({type(error).__name__})"
+            ) from error
+        content = response.choices[0].message.content if response.choices else None
+        logger.debug("Ответ LLM (сырой):\n%s", content)
+        try:
+            if not isinstance(content, str) or not content.strip():
+                raise _InvalidLLMResponse("empty response")
+            data = self._parse_json_object(content)
+            if not isinstance(data, dict):
+                raise _InvalidLLMResponse("top-level JSON value must be an object")
+            return data
+        except _InvalidLLMResponse as error:
+            raise InvalidLLMGenerationError("LLM response is not a valid JSON object") from error
+
+    @staticmethod
+    def _has_permanent_transport_cause(error: BaseException) -> bool:
+        pending = [error]
+        seen: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            if isinstance(current, ssl.SSLError) or (
+                isinstance(current, ResponseError)
+                and current.status_code not in _TRANSIENT_HTTP_STATUSES
+            ):
+                return True
+            # Некоторые обёртки транспорта сохраняют лишь сообщение OpenSSL.
+            message = str(current).casefold()
+            if "certificate_verify_failed" in message or "certificate verify failed" in message:
+                return True
+            pending.extend(cause for cause in (
+                current.__cause__, current.__context__,
+            ) if cause is not None)
+        return False
+
+    async def _achat_with_transient_retry(self, chat: Chat) -> Any:
+        """Не более трёх попыток внутри общего таймаута запроса вызывающего кода."""
+        for attempt in range(3):
+            try:
+                return await self.client.achat(chat)
+            except (ResponseError, httpx.NetworkError, httpx.ConnectTimeout) as error:
+                if attempt == 2 or self._has_permanent_transport_cause(error):
+                    raise
+                delay = 2 ** attempt
+                label = (
+                    f"HTTP {error.status_code}" if isinstance(error, ResponseError)
+                    else type(error).__name__
+                )
+                logger.warning(
+                    "Временная ошибка GigaChat %s, повтор %d/2 через %d с",
+                    label, attempt + 1, delay,
+                )
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable")
+
+    async def aclose(self) -> None:
+        client, self._client = self._client, None
+        if client is None:
+            return
+        try:
+            async with asyncio.timeout(_FAST_CLIENT_CLOSE_TIMEOUT):
+                await client.aclose()
+        except Exception as error:
+            # Закрытие транспорта не должно менять уже проверенный результат
+            # или скрывать исходную ошибку. Внешняя отмена по-прежнему проходит.
+            logger.warning("Не удалось закрыть клиент LLM (%s)", type(error).__name__)
+
+
 llm_client = LLMClient()
+fast_llm_client = FastLLMClient()

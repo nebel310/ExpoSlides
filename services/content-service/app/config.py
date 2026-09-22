@@ -4,8 +4,6 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-
-
 class Settings(BaseSettings):
     """Настройки content-service"""
 
@@ -14,6 +12,10 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_api_timeout: int = Field(default=180, gt=0)
     llm_model: str = "GigaChat-2-Max"
+    llm_fast_model: str = Field(default="GigaChat-2-Pro", min_length=1)
+    llm_fast_repair_model: str = Field(default="GigaChat-2-Pro", min_length=1)
+    llm_fast_api_timeout: int = Field(default=120, gt=0)
+    fast_generation_timeout: int = Field(default=240, ge=30, le=270)
     llm_base_url: str = "https://api.giga.chat/v1"
     llm_scope: str = "GIGACHAT_API_PERS"
     llm_temperature: float = 0.2

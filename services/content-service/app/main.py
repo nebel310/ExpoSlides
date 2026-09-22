@@ -8,17 +8,13 @@ import signal
 from pathlib import Path
 from uuid import uuid4
 
+from app.chains.llm import fast_llm_client
 from app.config import settings, setup_logging
-from app.errors import ContentValidationError
+from app.errors import CONTENT_ERROR_EXIT_CODES, ContentValidationError, content_error_code
 from app.graph.builder import build_graph
-from app.grpc.file_service_client import FileServiceClient
-from app.grpc.server import GrpcServer
-from app.kafka.consumer import KafkaConsumer
-from app.kafka.producer import KafkaProducer
 from app.models.graph_state import ContentGraphState
 from app.models.request import GenerationSettings
 from app.models.response import GenerationResponse, SlideContentResponse
-from app.services.content_pipeline import ContentPipeline
 from app.utils.presentation_parser import PresentationParser
 
 logger = logging.getLogger(__name__)
@@ -28,6 +24,12 @@ SERVICE_ROOT = Path(__file__).resolve().parent.parent
 
 async def serve() -> None:
     """Запустить gRPC-сервер и Kafka consumer в одном asyncio-loop"""
+    from app.grpc.file_service_client import FileServiceClient
+    from app.grpc.server import GrpcServer
+    from app.kafka.consumer import KafkaConsumer
+    from app.kafka.producer import KafkaProducer
+    from app.services.content_pipeline import ContentPipeline
+
     setup_logging()
 
     file_client = FileServiceClient()
@@ -126,7 +128,11 @@ async def run(
     graph = build_graph()
 
     logger.info("Запуск графа")
-    result = await graph.ainvoke(initial_state)
+    try:
+        result = await graph.ainvoke(initial_state)
+    finally:
+        if initial_state.settings.generation_mode == "fast":
+            await fast_llm_client.aclose()
     result_state = ContentGraphState(**result)
     logger.info("Граф завершил работу")
 
@@ -176,6 +182,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tone", default="professional")
     parser.add_argument("--complexity", default="medium")
     parser.add_argument("--max-slides", type=int)
+    parser.add_argument("--generation-mode", choices=("standard", "fast"), default="standard")
     return parser.parse_args(argv)
 
 
@@ -208,6 +215,7 @@ def _run_cli(args: argparse.Namespace) -> int:
             tone=args.tone,
             complexity=args.complexity,
             max_slides=args.max_slides,
+            generation_mode=args.generation_mode,
         )
         user_mapping = _load_user_mapping(args.user_mapping)
         asyncio.run(
@@ -222,7 +230,8 @@ def _run_cli(args: argparse.Namespace) -> int:
     except Exception as error:
         logger.error("Content-service завершился с ошибкой: %s", error)
         logger.debug("Детали ошибки content-service", exc_info=True)
-        return 1
+        code = content_error_code(error, credentials_configured=bool(settings.llm_api_key.strip()))
+        return CONTENT_ERROR_EXIT_CODES.get(code, 1)
     return 0
 
 

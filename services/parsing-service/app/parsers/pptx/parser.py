@@ -5,12 +5,10 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pptx import Presentation as PPTXPresentation
-
 from app.models.presentation import (
     AssetRef,
-    BBox,
     BackgroundKind,
+    BBox,
     DesignTokens,
     ElementType,
     Fill,
@@ -33,6 +31,8 @@ from app.parsers.pptx.helpers import (
     map_placeholder_kind,
     normalize_placeholder_idx,
 )
+
+from pptx import Presentation as PPTXPresentation
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ class PPTXParser(BaseParser):
         elements = []
         for shape in slide.shapes:
             element_id = f"slide-{index}-shape-{shape.shape_id}"
-            elem = shapes_module.parse_shape(shape, theme, element_id, assets)
+            elem = shapes_module.parse_shape(shape, theme, element_id, assets, owner=slide)
             if elem:
                 elements.append(elem)
 

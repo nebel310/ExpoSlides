@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#15171b">
+    <meta name="description" content="Рабочее пространство ExpoSlides: ваш шаблон, ваш текст, готовая презентация.">
+    <title>Новая презентация · ExpoSlides</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">Перейти к материалам</a>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="ExpoSlides — главная">
+        <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect width="32" height="32" rx="8" fill="currentColor"/><path d="M9 10h14v3H9zm0 5h10v3H9zm0 5h14v3H9z" fill="white"/></svg>
+        <span>ExpoSlides</span>
+      </a>
+      <span class="header-divider" aria-hidden="true">/</span>
+      <h1>Новая презентация</h1>
+      <button class="help-button" id="help-button" type="button" aria-label="Как это работает"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="7.2" stroke="currentColor" stroke-width="1.4"/><path d="M8 7.5a2 2 0 0 1 4 .3c0 1.5-2 1.4-2 3M10 13.5v.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+    </header>
+
+    <main id="workspace" class="workspace">
+      <div class="panel-switcher" role="group" aria-label="Раздел редактора"><button type="button" id="view-materials" aria-pressed="true" aria-controls="presentation-form">Материалы</button><button type="button" id="view-preview" aria-pressed="false" aria-controls="preview-panel">Слайды <span id="mobile-slide-count"></span></button></div>
+      <div class="workspace-grid">
+        <form id="presentation-form" class="materials" novalidate>
+          <div class="panel-heading"><h2>Материалы</h2><button class="text-button example-button" id="example-button" type="button">Открыть пример</button></div>
+          <ol class="workflow" aria-label="Этапы создания">
+            <li class="is-current" id="step-materials" aria-current="step"><span class="step-number">1</span><span>Материалы</span></li>
+            <li id="step-generation"><span class="step-number">2</span><span>Сборка</span></li>
+            <li id="step-result"><span class="step-number">3</span><span>Готово</span></li>
+          </ol>
+          <div class="panel-fields">
+          <section class="input-section template-section" aria-labelledby="template-label">
+            <div class="section-heading"><h3 id="template-label">Шаблон</h3><span class="field-format">PPTX</span></div>
+            <input class="visually-hidden" id="template-input" type="file" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" tabindex="-1">
+            <button class="dropzone" id="dropzone" type="button" aria-describedby="template-hint">
+              <span class="upload-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 15V4m-4 4 4-4 4 4M5 14v5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span><strong id="upload-title">Выберите файл</strong><span class="dropzone-subtitle" id="upload-subtitle">или перетащите сюда · до 25 МБ</span></span>
+            </button>
+            <div id="selected-template" class="selected-template" hidden><span class="file-symbol" aria-hidden="true">P</span><div class="file-details"><strong id="template-name"></strong><span id="template-meta"></span></div><button class="icon-button" id="remove-template" type="button" aria-label="Удалить выбранный шаблон">×</button></div>
+            <p class="field-hint" id="template-hint">Используем макеты и оформление из PPTX.</p>
+          </section>
+
+          <section class="input-section script-section" aria-labelledby="script-label">
+            <div class="section-heading"><h3><label id="script-label" for="script">Исходный текст</label></h3><button class="text-button import-button" id="import-button" type="button"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 1.5h4l3 3v10H3v-13h2Zm4 0v3h3M5 8h5M5 11h4" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>Импорт .txt</button><input class="visually-hidden" type="file" id="script-input" accept=".txt,text/plain" tabindex="-1"></div>
+            <div class="textarea-wrap"><textarea id="script" name="script" maxlength="100000" placeholder="О чём вы хотите рассказать?&#10;&#10;Вставьте текст доклада или заметки: основные мысли, факты и выводы." aria-describedby="script-hint script-count"></textarea><div class="textarea-footer"><span id="script-source">Текст доклада</span><span id="script-count">0 символов</span></div></div>
+            <p class="field-hint visually-hidden" id="script-hint">Укажите факты и выводы, которые должны попасть на слайды.</p>
+          </section>
+
+          <section class="options-section" aria-label="Параметры презентации"><div><label for="max-slides">Слайдов</label><p class="field-hint">Не больше, чем в шаблоне</p></div><div class="select-wrap"><select id="max-slides" name="max-slides"><option value="">Автоматически</option></select><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5"/></svg></div></section>
+
+          <div class="message error-message" id="error-message" role="alert" hidden></div>
+          <section class="job-panel" id="job-panel" aria-labelledby="job-title" hidden><div class="job-heading"><span class="activity-indicator" id="activity-indicator" aria-hidden="true"></span><h2 id="job-title">Готовим презентацию</h2></div><p id="job-description" aria-live="polite">Читаем структуру шаблона…</p><ol class="job-stages" id="job-stages"><li data-stage="parser">Шаблон</li><li data-stage="content">Текст</li><li data-stage="builder">PPTX</li></ol><a class="download-button" id="download-button" hidden>Скачать презентацию <span aria-hidden="true">↓</span></a></section>
+          </div>
+          <div class="form-actions"><button class="primary-button" id="generate-button" type="submit" disabled><span id="generate-label">Создать презентацию</span><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 10h13m-5-5 5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button><p class="action-hint" id="action-hint">Добавьте шаблон и текст, чтобы начать</p></div>
+        </form>
+
+        <aside class="preview" id="preview-panel" aria-labelledby="preview-heading">
+          <div class="preview-heading"><div class="preview-heading-label"><svg viewBox="0 0 18 18" fill="none" aria-hidden="true"><rect x="2" y="3" width="14" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M5 6h5M5 9h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><h2 id="preview-heading">Структура шаблона</h2></div><div class="preview-tools"><button class="activity-toggle" id="activity-toggle" type="button" hidden>Показать шаблон</button><a class="activity-toggle result-download" id="result-download" download="presentation.pptx" hidden>Скачать PPTX ↓</a><span class="preview-counter" id="preview-counter">Нет шаблона</span></div></div>
+          <div class="canvas-stage">
+          <section class="generation-view" id="generation-view" aria-labelledby="generation-title" hidden>
+            <div class="animated-deck" aria-hidden="true">
+              <div class="deck-sheet deck-sheet-back"></div>
+              <div class="deck-sheet deck-sheet-middle"></div>
+              <div class="deck-sheet deck-sheet-front">
+                <div class="deck-cover deck-layout"><span class="deck-page">01</span><span class="deck-line deck-title-line"></span><span class="deck-line deck-subtitle-line"></span><span class="deck-cover-accent"></span><span class="deck-line deck-footnote"></span></div>
+                <div class="deck-chart deck-layout"><span class="deck-page">02</span><span class="deck-line deck-chart-title"></span><div class="deck-bars"><span></span><span></span><span></span><span></span></div><span class="deck-line deck-footnote"></span></div>
+                <div class="deck-list deck-layout"><span class="deck-page">03</span><span class="deck-line deck-chart-title"></span><div class="deck-list-rows"><div><i></i><span></span></div><div><i></i><span></span></div><div><i></i><span></span></div></div><span class="deck-line deck-footnote"></span></div>
+              </div>
+              <div class="deck-shadow"></div>
+            </div>
+            <div class="generation-copy" role="status" aria-live="polite" aria-atomic="true"><h2 id="generation-title">Готовим презентацию</h2><p id="generation-description">Подготавливаем материалы для слайдов.</p></div>
+            <button class="motion-toggle" id="motion-toggle" type="button" aria-pressed="false"><svg class="motion-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 4v8M11 4v8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><svg class="motion-play" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 3 8 5-8 5Z" fill="currentColor"/></svg><span id="motion-label">Приостановить анимацию</span></button>
+          </section>
+          <div class="slide-preview" id="slide-preview">
+            <img class="rendered-slide" id="rendered-slide" alt="" hidden>
+            <div class="preview-loading" id="preview-loading" role="status" hidden><span class="preview-loading-icon" aria-hidden="true"></span><h3>Готовим предпросмотр</h3><p id="preview-loading-description">Фон, изображения и оформление появятся здесь.<br>Вы уже можете добавить текст для презентации.</p></div>
+            <div class="empty-preview" id="empty-preview"><svg class="empty-slide-icon" viewBox="0 0 40 40" fill="none" aria-hidden="true"><rect x="4" y="7" width="32" height="25" rx="3" stroke="currentColor" stroke-width="1.5"/><path d="M12 15h16M12 21h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><h3 id="empty-preview-title">Здесь будут ваши слайды</h3><p id="empty-preview-description">Добавьте PPTX в панели материалов<br>или откройте пример.</p></div>
+            <div class="slide-content" id="slide-content" hidden><div class="slide-kicker"><span>СОДЕРЖАНИЕ СЛАЙДА</span><span id="slide-number">01</span></div><div class="slide-body"><h3 id="slide-title"></h3><div id="slide-texts"></div></div><div class="slide-bottom"><span id="slide-type">Текстовый макет</span><span class="slide-mark" aria-hidden="true"></span></div></div>
+          </div>
+          </div>
+          <div class="canvas-footer" id="canvas-footer">
+          <div class="preview-navigation" id="preview-navigation" hidden><button class="icon-button" id="previous-slide" type="button" aria-label="Предыдущий слайд">←</button><span id="slide-position" aria-live="polite"></span><button class="icon-button" id="next-slide" type="button" aria-label="Следующий слайд">→</button></div>
+          <div class="thumbnails" id="thumbnails" aria-label="Слайды шаблона" hidden></div>
+          <p class="preview-caption" id="preview-caption">Текстовая схема · Оформление исходного PPTX сохранится при сборке</p>
+          </div>
+        </aside>
+      </div>
+    </main>
+
+    <dialog id="help-dialog" aria-labelledby="help-title"><div class="dialog-heading"><p class="eyebrow">EXPOSLIDES</p><button class="icon-button" id="close-help" type="button" aria-label="Закрыть справку">×</button></div><h2 id="help-title">От материалов<br>к готовым слайдам</h2><ol class="help-steps"><li><span>01</span><div><h3>Добавьте свой шаблон</h3><p>Нужен PPTX с текстовыми заполнителями — заголовками и блоками для основного текста. Обычные текстовые поля не заменяются.</p></div></li><li><span>02</span><div><h3>Расскажите главное</h3><p>Вставьте текст или загрузите файл .txt в UTF-8. Включите факты и выводы, которые хотите донести.</p></div></li><li><span>03</span><div><h3>Заберите презентацию</h3><p>Скачайте редактируемый PowerPoint. Проверьте содержание и размещение текста перед выступлением.</p></div></li></ol><div class="help-note">Для сборки нужен настроенный доступ к GigaChat. Исходный текст и текстовая структура шаблона отправляются в GigaChat только после нажатия «Создать презентацию». Просмотр примера работает без генерации.</div><p class="help-storage">Файлы доступны до остановки локального приложения. Скачайте результат перед закрытием сервера.</p><button class="primary-button" id="help-done" type="button">Понятно <span aria-hidden="true">↗</span></button></dialog>
+    <div class="toast" id="toast" role="status" hidden></div>
+  </body>
+</html>

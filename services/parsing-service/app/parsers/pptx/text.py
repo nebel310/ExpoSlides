@@ -2,10 +2,6 @@ from __future__ import annotations
 
 import logging
 
-from pptx.enum.dml import MSO_COLOR_TYPE
-from pptx.enum.text import PP_ALIGN
-from pptx.oxml.ns import qn
-
 from app.models.presentation import (
     Alignment,
     Paragraph,
@@ -16,6 +12,13 @@ from app.models.presentation import (
     ThemeInfo,
 )
 from app.parsers.pptx.helpers import theme_color_to_token
+from app.parsers.text_style import inherited_font
+
+from pptx.enum.dml import MSO_COLOR_TYPE
+from pptx.enum.text import PP_ALIGN
+from pptx.oxml.ns import qn
+from pptx.shapes.base import BaseShape
+from pptx.slide import Slide, SlideLayout
 
 logger = logging.getLogger(__name__)
 
@@ -24,17 +27,26 @@ def parse_text_frame(
     text_frame,
     placeholder_kind: PlaceholderKind | None,
     theme: ThemeInfo | None,
+    *,
+    shape: BaseShape | None = None,
+    owner: Slide | SlideLayout | None = None,
 ) -> TextElement | None:
     """Извлекает параграфы и runs с индивидуальными стилями"""
     paragraphs: list[Paragraph] = []
 
     for para in text_frame.paragraphs:
+        inherited_size = None
+        inherited_name = None
+        if shape is not None and owner is not None:
+            inherited_size, inherited_name = inherited_font(shape, para, owner)
         runs: list[Run] = []
         for run in para.runs:
             runs.append(
                 Run(
                     text=run.text,
-                    style=extract_style(run.font, para, placeholder_kind, theme),
+                    style=extract_style(
+                        run.font, para, placeholder_kind, theme, inherited_size, inherited_name
+                    ),
                     hyperlink=extract_hyperlink(run),
                 )
             )
@@ -86,12 +98,14 @@ def extract_style(
     paragraph,
     placeholder_kind: PlaceholderKind | None,
     theme: ThemeInfo | None,
+    inherited_size: float | None = None,
+    inherited_name: str | None = None,
 ) -> TextStyle:
     """Извлекает стиль текста с учётом темы и токенов"""
-    font_name, _ = resolve_font(font, placeholder_kind, theme)
+    font_name, _ = resolve_font(font, placeholder_kind, theme, inherited_name)
     color_hex, color_token = resolve_color(font, theme)
 
-    size_pt = font.size.pt if font.size else None
+    size_pt = font.size.pt if font.size else inherited_size
 
     alignment = None
     if paragraph.alignment is not None:
@@ -122,9 +136,10 @@ def resolve_font(
     font,
     placeholder_kind: PlaceholderKind | None,
     theme: ThemeInfo | None,
+    inherited_name: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Разрешает шрифт: возвращает имя и токен (+mj-lt / +mn-lt)"""
-    name = font.name
+    name = font.name or inherited_name
 
     if name is None:
         if theme is None:

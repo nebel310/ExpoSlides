@@ -1,6 +1,10 @@
+import asyncio
+from typing import Any
+
 from app.config import settings
 from app.errors import ContentValidationError
 from app.graph import nodes
+from app.graph.fast import generate_fast
 from app.models.graph_state import ContentGraphState
 from langgraph.graph import END, StateGraph
 
@@ -13,8 +17,13 @@ def build_graph():
     workflow.add_node("plan_slides", nodes.plan_slides)
     workflow.add_node("generate_content", nodes.generate_content)
     workflow.add_node("validate_content", nodes.validate_content)
+    workflow.add_node("generate_fast", _generate_fast_with_deadline)
 
-    workflow.set_entry_point("analyze_script")
+    workflow.set_conditional_entry_point(
+        lambda state: state.settings.generation_mode,
+        {"standard": "analyze_script", "fast": "generate_fast"},
+    )
+    workflow.add_edge("generate_fast", END)
     workflow.add_edge("analyze_script", "plan_slides")
     workflow.add_edge("plan_slides", "generate_content")
     workflow.add_edge("generate_content", "validate_content")
@@ -28,6 +37,18 @@ def build_graph():
     )
 
     return workflow.compile()
+
+
+async def _generate_fast_with_deadline(state: ContentGraphState) -> dict[str, Any]:
+    """Общий бюджет включает запросы и отдельное исправление плана и текста."""
+    try:
+        async with asyncio.timeout(settings.fast_generation_timeout):
+            return await generate_fast(state)
+    except TimeoutError as error:
+        raise ContentValidationError(
+            "Модель не успела подготовить проверенную презентацию за отведённое время. "
+            "Попробуйте ещё раз или уменьшите объём исходного текста."
+        ) from error
 
 
 def _should_retry(state: ContentGraphState):

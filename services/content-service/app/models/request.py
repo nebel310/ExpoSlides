@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -11,6 +11,7 @@ class GenerationSettings(BaseModel):
     complexity: str = Field(default="medium", min_length=2, max_length=32)
     max_slides: Optional[int] = Field(default=None, ge=1)
     strict_user_mapping: bool = True
+    generation_mode: Literal["standard", "fast"] = "standard"
 
 
 class GenerationRequest(BaseModel):

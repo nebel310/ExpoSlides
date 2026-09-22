@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import logging
 
-from pptx.enum.dml import MSO_COLOR_TYPE, MSO_FILL_TYPE
-from pptx.enum.shapes import MSO_SHAPE_TYPE
-
 from app.models.presentation import (
     BackgroundKind,
     BBox,
@@ -34,6 +31,10 @@ from app.parsers.pptx.helpers import (
     theme_color_to_token,
 )
 
+from pptx.enum.dml import MSO_COLOR_TYPE, MSO_FILL_TYPE
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.slide import Slide, SlideLayout
+
 logger = logging.getLogger(__name__)
 
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -45,6 +46,7 @@ def parse_shape(
     theme: ThemeInfo | None,
     element_id: str,
     assets: dict,
+    owner: Slide | SlideLayout | None = None,
 ) -> SlideElement | None:
     """Определяет тип фигуры и делегирует парсинг нужному методу"""
     bbox = BBox(
@@ -82,7 +84,7 @@ def parse_shape(
     )
 
     if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-        group = parse_group(shape, theme, element_id, assets)
+        group = parse_group(shape, theme, element_id, assets, owner=owner)
         return SlideElement(type=ElementType.GROUP, group=group, **common)
 
     if getattr(shape, "has_chart", False):
@@ -111,7 +113,9 @@ def parse_shape(
         return SlideElement(type=ElementType.IMAGE, image=image, **common)
 
     if getattr(shape, "has_text_frame", False):
-        text = text_module.parse_text_frame(shape.text_frame, placeholder_kind, theme)
+        text = text_module.parse_text_frame(
+            shape.text_frame, placeholder_kind, theme, shape=shape, owner=owner
+        )
 
         if placeholder_kind is not None:
             return SlideElement(type=ElementType.TEXT, text=text, **common)
@@ -130,12 +134,13 @@ def parse_group(
     theme: ThemeInfo | None,
     parent_id: str,
     assets: dict,
+    owner: Slide | SlideLayout | None = None,
 ) -> GroupElement:
     """Рекурсивно разбирает группу фигур"""
     children: list[SlideElement] = []
     for idx, child in enumerate(shape.shapes):
         child_id = f"{parent_id}-child-{idx}"
-        parsed = parse_shape(child, theme, child_id, assets)
+        parsed = parse_shape(child, theme, child_id, assets, owner=owner)
         if parsed:
             children.append(parsed)
     return GroupElement(children=children)
