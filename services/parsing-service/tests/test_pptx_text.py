@@ -212,8 +212,7 @@ def test_parse_text_frame_empty(tmp_path: Path) -> None:
 
     result = text_module.parse_text_frame(box.text_frame, None, None)
 
-    # у пустого textbox один параграф без runs
-    assert isinstance(result.paragraphs, list)
+    assert result.paragraphs == []
 
 
 def test_parse_text_frame_run_without_text(tmp_path: Path) -> None:

@@ -156,3 +156,15 @@ def _collect_element_parts(element: SlideElement, parts: list[str]) -> None:
     if element.group:
         for child in element.group.children:
             _collect_element_parts(child, parts)
+
+
+PLACEHOLDER_IDX_INVALID = 4294967295
+
+
+def normalize_placeholder_idx(idx: int | None) -> int | None:
+    """Убирает мусорный placeholder_idx (0xFFFFFFFF)"""
+    if idx is None:
+        return None
+    if idx == PLACEHOLDER_IDX_INVALID or idx < 0:
+        return None
+    return idx

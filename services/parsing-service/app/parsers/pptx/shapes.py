@@ -30,6 +30,7 @@ from app.parsers.pptx.helpers import (
     get_rotation,
     get_z_order,
     map_placeholder_kind,
+    normalize_placeholder_idx,
     theme_color_to_token,
 )
 
@@ -60,7 +61,7 @@ def parse_shape(
     placeholder_name = None
     if shape.is_placeholder:
         placeholder_kind = map_placeholder_kind(shape.placeholder_format.type)
-        placeholder_idx = shape.placeholder_format.idx
+        placeholder_idx = normalize_placeholder_idx(shape.placeholder_format.idx)
         placeholder_name = shape.name
 
     fill = parse_fill(shape, theme, assets)

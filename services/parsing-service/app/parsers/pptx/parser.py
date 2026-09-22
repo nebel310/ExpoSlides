@@ -31,6 +31,7 @@ from app.parsers.pptx.helpers import (
     classify_layout_by_name,
     content_hash,
     map_placeholder_kind,
+    normalize_placeholder_idx,
 )
 
 logger = logging.getLogger(__name__)
@@ -156,12 +157,10 @@ class PPTXParser(BaseParser):
         background = shapes_module.parse_background(slide.background, theme, assets)
 
         notes = None
-        if slide.has_notes_slide:
-            notes = (
-                slide.notes_slide.notes_text_frame.text
-                if slide.notes_slide.notes_text_frame
-                else None
-            )
+        if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
+            raw_notes = slide.notes_slide.notes_text_frame.text
+            if raw_notes and raw_notes.strip():
+                notes = raw_notes
 
         return Slide(
             index=index,
@@ -276,7 +275,7 @@ class PPTXParser(BaseParser):
                     PlaceholderInfo(
                         kind=map_placeholder_kind(shape.placeholder_format.type),
                         name=shape.name,
-                        idx=shape.placeholder_format.idx,
+                        idx=normalize_placeholder_idx(shape.placeholder_format.idx),
                         bbox=bbox,
                     )
                 )

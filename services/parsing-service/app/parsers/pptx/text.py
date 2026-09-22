@@ -39,6 +39,9 @@ def parse_text_frame(
                 )
             )
 
+        if not runs:
+            continue
+
         bullet, bullet_char = parse_bullet(para)
         paragraphs.append(
             Paragraph(
