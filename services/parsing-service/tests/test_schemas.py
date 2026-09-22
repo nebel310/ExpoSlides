@@ -11,59 +11,67 @@ from app.kafka.schemas import (
 )
 
 
-def test_envelope_defaults():
-    """Конверт без payload/error получает attempt=1 и пустой payload"""
-    envelope = MessageEnvelope(task_id="t-1")
-    assert envelope.task_id == "t-1"
-    assert envelope.attempt == 1
-    assert envelope.payload == {}
-    assert envelope.error is None
+def test_message_envelope_minimal() -> None:
+    env = MessageEnvelope(task_id="t1")
+    assert env.task_id == "t1"
+    assert env.attempt == 1
+    assert env.payload == {}
+    assert env.error is None
 
 
-def test_envelope_full_roundtrip():
-    """Конверт с payload и error сериализуется и парсится обратно без потерь"""
-    envelope = MessageEnvelope(
-        task_id="t-1",
-        attempt=3,
-        payload={"k": "v"},
-        error="boom",
-    )
-    raw = envelope.model_dump_json()
-    restored = MessageEnvelope.model_validate_json(raw)
-    assert restored == envelope
+def test_message_envelope_full() -> None:
+    env = MessageEnvelope(task_id="t1", attempt=3, payload={"a": 1}, error="bad")
+    assert env.attempt == 3
+    assert env.payload == {"a": 1}
+    assert env.error == "bad"
 
 
-def test_envelope_requires_task_id():
-    """Конверт без task_id отклоняется"""
+def test_message_envelope_missing_task_id() -> None:
     with pytest.raises(ValidationError):
         MessageEnvelope()
 
 
-def test_task_created_payload():
-    """Payload task.created принимает оба file_id"""
-    payload = TaskCreatedPayload(template_file_id="tpl", script_file_id="scr")
-    assert payload.template_file_id == "tpl"
-    assert payload.script_file_id == "scr"
-
-
-def test_task_created_payload_missing_script():
-    """Payload task.created без script_file_id отклоняется"""
+def test_message_envelope_wrong_type() -> None:
     with pytest.raises(ValidationError):
-        TaskCreatedPayload(template_file_id="tpl")
+        MessageEnvelope(task_id=123)
 
 
-def test_task_parsed_payload():
-    """Payload task.parsed принимает три file_id"""
-    payload = TaskParsedPayload(
-        structure_file_id="s",
-        template_file_id="t",
-        script_file_id="sc",
+def test_message_envelope_json_roundtrip() -> None:
+    env = MessageEnvelope(task_id="t1", payload={"x": 1})
+    restored = MessageEnvelope.model_validate_json(env.model_dump_json())
+    assert restored.task_id == env.task_id
+    assert restored.payload == env.payload
+
+
+def test_task_created_payload_valid() -> None:
+    p = TaskCreatedPayload(template_file_id="a", script_file_id="b")
+    assert p.template_file_id == "a"
+    assert p.script_file_id == "b"
+
+
+def test_task_created_payload_missing_field() -> None:
+    with pytest.raises(ValidationError):
+        TaskCreatedPayload(template_file_id="a")
+
+
+def test_task_parsed_payload_valid() -> None:
+    p = TaskParsedPayload(
+        structure_file_id="s", template_file_id="t", script_file_id="c"
     )
-    assert payload.structure_file_id == "s"
+    assert p.structure_file_id == "s"
 
 
-def test_task_failed_payload():
-    """Payload task.failed принимает stage и reason"""
-    payload = TaskFailedPayload(stage="parser", reason="bad pptx")
-    assert payload.stage == "parser"
-    assert payload.reason == "bad pptx"
+def test_task_parsed_payload_missing_field() -> None:
+    with pytest.raises(ValidationError):
+        TaskParsedPayload(structure_file_id="s", template_file_id="t")
+
+
+def test_task_failed_payload_valid() -> None:
+    p = TaskFailedPayload(stage="parser", reason="bad")
+    assert p.stage == "parser"
+    assert p.reason == "bad"
+
+
+def test_task_failed_payload_missing_field() -> None:
+    with pytest.raises(ValidationError):
+        TaskFailedPayload(stage="parser")

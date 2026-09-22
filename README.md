@@ -34,6 +34,15 @@ uv run python -m exposlides \
 2. `content-service`: template JSON + script → `generated_content.json`;
 3. `builder-service`: template PPTX + generated content → проверенный итоговый PPTX.
 
+Локальный парсер использует модульный формат Presentation JSON `2.0.0`: типы полей
+хранятся в `placeholder_kind`, текст — в `paragraphs[].runs[]`, тема — в `tokens.theme`.
+Генератор и сборщик явно поддерживают этот формат и прежний JSON без версии либо с
+`schema_version: "1.0.0"`; неизвестные версии отклоняются до генерации или сборки.
+При чтении v2 тип `content` преобразуется во внутренний `OBJECT`, а текстовые фрагменты
+собираются с сохранением границ абзацев. Индексы слайдов и ключи полей не меняются.
+Прежний Python API `app.parsers.pptx_parser.PPTXParser` сохранён на отдельной модели v1;
+активный CLI и сетевой parser-service используют `app.parsers.pptx.PPTXParser` v2.
+
 Корневая команда передаёт content-service флаг `--cli`: локальная генерация не требует
 Kafka. При прямом запуске `python -m app.main` из каталога content-service этот флаг нужно
 указывать явно, иначе сервис запускается в сетевом режиме.

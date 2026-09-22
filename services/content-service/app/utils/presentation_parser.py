@@ -16,19 +16,23 @@ class PresentationParser:
     @classmethod
     def parse(cls, presentation_json: dict) -> PresentationData:
         """Преобразование полного JSON в PresentationData"""
+        version = presentation_json.get("schema_version")
+        if version not in (None, "1.0.0", "2.0.0"):
+            raise ValueError(f"Неподдерживаемая версия Presentation JSON: {version}")
         slides = []
         for slide in presentation_json.get("slides", []):
             placeholders = []
             elements = slide.get("elements", [])
             for element in elements:
-                if element.get("type") == "text" and element.get("placeholder_type"):
-                    text = element.get("text", {}).get("full_text", "")
+                placeholder_type = cls._placeholder_type(element)
+                if element.get("type") == "text" and placeholder_type:
+                    text = cls._full_text(element.get("text") or {})
                     max_length = cls._estimate_max_length(element, elements)
                     placeholders.append(
                         PlaceholderData(
                             idx=element.get("placeholder_idx"),
                             name=element.get("placeholder_name"),
-                            placeholder_type=element.get("placeholder_type"),
+                            placeholder_type=placeholder_type,
                             text=text,
                             max_length=max_length,
                         )
@@ -49,7 +53,7 @@ class PresentationParser:
             for ph in layout.get("placeholders", []):
                 placeholders.append(
                     LayoutPlaceholderData(
-                        placeholder_type=ph.get("placeholder_type"),
+                        placeholder_type=cls._placeholder_type(ph, layout=True),
                         name=ph.get("name"),
                         idx=ph.get("idx"),
                     )
@@ -67,7 +71,40 @@ class PresentationParser:
             slide_height=presentation_json.get("slide_height", 0),
             slides=slides,
             layouts=layouts,
-            theme=presentation_json.get("theme") or {},
+            theme=(
+                presentation_json.get("theme")
+                or (presentation_json.get("tokens") or {}).get("theme")
+                or {}
+            ),
+        )
+
+    @staticmethod
+    def _placeholder_type(element: dict, *, layout: bool = False) -> Optional[str]:
+        """Согласовать типы placeholders JSON v1 и v2 с контрактом генерации."""
+        legacy_type = element.get("placeholder_type")
+        if legacy_type:
+            return legacy_type
+        kind = element.get("kind" if layout else "placeholder_kind")
+        if kind is None:
+            return None
+        mapping = {
+            "title": "TITLE", "section_header": "TITLE", "subtitle": "SUBTITLE",
+            "body": "BODY", "content": "OBJECT", "picture": "PICTURE", "table": "TABLE",
+            "chart": "CHART", "date": "DATE", "footer": "FOOTER",
+            "slide_number": "SLIDE_NUMBER", "other": "OTHER",
+        }
+        if not isinstance(kind, str) or kind not in mapping:
+            raise ValueError(f"Неизвестный вид placeholder в Presentation JSON: {kind}")
+        return mapping[kind]
+
+    @staticmethod
+    def _full_text(text: dict) -> str:
+        """В v2 текст хранится в runs; v1 сохраняет явный full_text."""
+        if "full_text" in text:
+            return text["full_text"]
+        return "\n".join(
+            "".join(run["text"] for run in paragraph.get("runs", []))
+            for paragraph in text.get("paragraphs", [])
         )
 
     @classmethod
@@ -81,7 +118,7 @@ class PresentationParser:
         по образцу. Эвристика не заменяет визуальную проверку готового слайда.
         """
         text_data = element.get("text") or {}
-        text = text_data.get("full_text", "")
+        text = cls._full_text(text_data)
         sample_length = len(text)
         fallback = int(sample_length * 1.3) if text else None
         bbox = element.get("bbox") or {}
@@ -100,7 +137,7 @@ class PresentationParser:
         # BBox хранится в EMU, шрифт — в пунктах. Отступы и средняя ширина
         # символа выбраны с запасом, в том числе для кириллицы и широких букв.
         font_size = max(font_sizes)
-        placeholder_type = (element.get("placeholder_type") or "").upper()
+        placeholder_type = (cls._placeholder_type(element) or "").upper()
         if placeholder_type in {"TITLE", "CENTER_TITLE", "VERTICAL_TITLE"}:
             width, height = cls._available_title_box(
                 element, elements or [], width, height, font_size

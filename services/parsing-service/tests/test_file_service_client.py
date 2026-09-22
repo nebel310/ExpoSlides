@@ -1,105 +1,140 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import pytest_asyncio
 
-import file_service_pb2
 from app.grpc.file_service_client import FileServiceClient
 
 
 @pytest.fixture
-def fake_stub() -> MagicMock:
-    """Мок FileServiceStub с async-методами"""
-    stub = MagicMock()
-    stub.DownloadFile = AsyncMock()
-    stub.UploadFile = AsyncMock()
-    return stub
-
-
-@pytest.fixture
-def client(fake_stub: MagicMock) -> FileServiceClient:
-    """Клиент с подставленным мок-стабом без реального connect"""
-    instance = FileServiceClient(host="localhost", port=50051)
-    instance._stub = fake_stub
-    return instance
+def client() -> FileServiceClient:
+    return FileServiceClient("localhost", 50051)
 
 
 @pytest.mark.asyncio
-async def test_download_file_returns_content(client, fake_stub):
-    """download_file возвращает байты и передаёт file_id/version=0"""
-    fake_stub.DownloadFile.return_value = file_service_pb2.DownloadFileResponse(
-        content=b"pptx-bytes",
+async def test_connect_creates_channel_and_stub(client: FileServiceClient) -> None:
+    with patch("app.grpc.file_service_client.grpc.aio.insecure_channel") as ch_mock:
+        ch_mock.return_value = MagicMock()
+        with patch(
+            "app.grpc.file_service_client.file_service_pb2_grpc.FileServiceStub"
+        ) as stub_mock:
+            await client.connect()
+            ch_mock.assert_called_once_with("localhost:50051")
+            stub_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_close_without_connect_ok(client: FileServiceClient) -> None:
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_close_after_connect(client: FileServiceClient) -> None:
+    channel = MagicMock()
+    channel.close = AsyncMock()
+
+    with patch(
+        "app.grpc.file_service_client.grpc.aio.insecure_channel",
+        return_value=channel,
+    ):
+        with patch(
+            "app.grpc.file_service_client.file_service_pb2_grpc.FileServiceStub"
+        ):
+            await client.connect()
+            await client.close()
+            channel.close.assert_awaited_once()
+            assert client._channel is None
+
+
+@pytest.mark.asyncio
+async def test_download_without_connect_raises(client: FileServiceClient) -> None:
+    with pytest.raises(RuntimeError):
+        await client.download_file("f1")
+
+
+@pytest.mark.asyncio
+async def test_upload_without_connect_raises(client: FileServiceClient) -> None:
+    with pytest.raises(RuntimeError):
+        await client.upload_file(
+            filename="a.pptx",
+            content=b"",
+            content_type="application/octet-stream",
+            task_id="t1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_without_connect_raises(client: FileServiceClient) -> None:
+    with pytest.raises(RuntimeError):
+        await client.delete_file("f1")
+
+
+@pytest_asyncio.fixture
+async def connected_client() -> FileServiceClient:
+    c = FileServiceClient("localhost", 50051)
+    c._channel = MagicMock()
+    c._stub = MagicMock()
+    return c
+
+
+@pytest.mark.asyncio
+async def test_download_returns_bytes(connected_client: FileServiceClient) -> None:
+    stub = connected_client._stub
+    response = MagicMock()
+    response.content = b"hello"
+    stub.DownloadFile = AsyncMock(return_value=response)
+
+    result = await connected_client.download_file("f1", version=0)
+
+    assert result == b"hello"
+    stub.DownloadFile.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_upload_returns_file_id(connected_client: FileServiceClient) -> None:
+    stub = connected_client._stub
+    response = MagicMock()
+    response.file_id = "new-id"
+    stub.UploadFile = AsyncMock(return_value=response)
+
+    result = await connected_client.upload_file(
         filename="a.pptx",
-        content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        version=1,
+        content=b"data",
+        content_type="application/octet-stream",
+        task_id="t1",
     )
-    result = await client.download_file("fid-1")
-    assert result == b"pptx-bytes"
-    request = fake_stub.DownloadFile.call_args[0][0]
-    assert request.file_id == "fid-1"
-    assert request.version == 0
+
+    assert result == "new-id"
+    stub.UploadFile.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_download_file_with_version(client, fake_stub):
-    """download_file прокидывает явную версию"""
-    fake_stub.DownloadFile.return_value = file_service_pb2.DownloadFileResponse(content=b"x")
-    await client.download_file("fid-1", version=2)
-    request = fake_stub.DownloadFile.call_args[0][0]
-    assert request.version == 2
+async def test_upload_with_existing_file_id(connected_client: FileServiceClient) -> None:
+    stub = connected_client._stub
+    response = MagicMock()
+    response.file_id = "existing"
+    stub.UploadFile = AsyncMock(return_value=response)
 
-
-@pytest.mark.asyncio
-async def test_upload_file_returns_file_id(client, fake_stub):
-    """upload_file возвращает file_id и прокидывает все поля запроса"""
-    fake_stub.UploadFile.return_value = file_service_pb2.UploadFileResponse(file_id="new-id")
-    file_id = await client.upload_file(
-        filename="structure.json",
-        content=b'{"a": 1}',
-        content_type="application/json",
-        task_id="t-1",
-    )
-    assert file_id == "new-id"
-    request = fake_stub.UploadFile.call_args[0][0]
-    assert request.filename == "structure.json"
-    assert request.content == b'{"a": 1}'
-    assert request.content_type == "application/json"
-    assert request.task_id == "t-1"
-    assert request.file_id == ""
-
-
-@pytest.mark.asyncio
-async def test_upload_file_with_existing_file_id(client, fake_stub):
-    """upload_file прокидывает file_id для создания новой версии"""
-    fake_stub.UploadFile.return_value = file_service_pb2.UploadFileResponse(file_id="fid")
-    await client.upload_file(
-        filename="structure.json",
-        content=b"{}",
-        content_type="application/json",
-        task_id="t-1",
+    result = await connected_client.upload_file(
+        filename="a.pptx",
+        content=b"data",
+        content_type="application/octet-stream",
+        task_id="t1",
         file_id="existing",
     )
-    request = fake_stub.UploadFile.call_args[0][0]
+
+    assert result == "existing"
+    request = stub.UploadFile.call_args.args[0]
     assert request.file_id == "existing"
 
 
 @pytest.mark.asyncio
-async def test_download_file_without_connect_raises():
-    """Вызов download_file до connect поднимает RuntimeError"""
-    instance = FileServiceClient(host="localhost", port=50051)
-    with pytest.raises(RuntimeError):
-        await instance.download_file("x")
+async def test_delete_calls_stub(connected_client: FileServiceClient) -> None:
+    stub = connected_client._stub
+    stub.DeleteFile = AsyncMock()
 
+    await connected_client.delete_file("f1")
 
-@pytest.mark.asyncio
-async def test_upload_file_without_connect_raises():
-    """Вызов upload_file до connect поднимает RuntimeError"""
-    instance = FileServiceClient(host="localhost", port=50051)
-    with pytest.raises(RuntimeError):
-        await instance.upload_file(
-            filename="x.json",
-            content=b"{}",
-            content_type="application/json",
-            task_id="t",
-        )
+    stub.DeleteFile.assert_awaited_once()

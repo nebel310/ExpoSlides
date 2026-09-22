@@ -16,8 +16,8 @@ PNG_1X1 = (
 )
 
 
-def make_simple_pptx(title: str = "Hello", subtitle: str = "World") -> bytes:
-    """Возвращает байты pptx с титульным слайдом"""
+def make_simple_pptx(title: str = "E2E Title", subtitle: str = "E2E Subtitle") -> bytes:
+    """Байты pptx с титульным слайдом"""
     prs = PPTXPresentation()
     slide = prs.slides.add_slide(prs.slide_layouts[0])
     slide.shapes.title.text = title
@@ -27,8 +27,23 @@ def make_simple_pptx(title: str = "Hello", subtitle: str = "World") -> bytes:
     return buffer.getvalue()
 
 
+def make_pptx_with_bullets(bullets: int = 3) -> bytes:
+    """Байты pptx со слайдом и списком"""
+    prs = PPTXPresentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.shapes.title.text = "Bullets"
+    body = slide.placeholders[1].text_frame
+    body.text = "Bullet 1"
+    for i in range(2, bullets + 1):
+        p = body.add_paragraph()
+        p.text = f"Bullet {i}"
+    buffer = io.BytesIO()
+    prs.save(buffer)
+    return buffer.getvalue()
+
+
 def make_pptx_with_table(rows: int = 2, cols: int = 2) -> bytes:
-    """Возвращает байты pptx со слайдом и таблицей"""
+    """Байты pptx со слайдом и таблицей"""
     prs = PPTXPresentation()
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     shape = slide.shapes.add_table(
@@ -44,7 +59,7 @@ def make_pptx_with_table(rows: int = 2, cols: int = 2) -> bytes:
 
 
 def make_pptx_with_image(tmp_dir: Path, slides_with_image: int = 1) -> bytes:
-    """Возвращает байты pptx с N слайдами, на каждом — одна и та же картинка"""
+    """Байты pptx с картинкой на N слайдах"""
     img = tmp_dir / "tiny.png"
     img.write_bytes(PNG_1X1)
 
@@ -54,21 +69,6 @@ def make_pptx_with_image(tmp_dir: Path, slides_with_image: int = 1) -> bytes:
         slide.shapes.add_picture(
             str(img), Emu(0), Emu(0), width=Emu(914400), height=Emu(914400)
         )
-    buffer = io.BytesIO()
-    prs.save(buffer)
-    return buffer.getvalue()
-
-
-def make_pptx_with_bullets(bullets: int = 3) -> bytes:
-    """Возвращает байты pptx со слайдом и списком буллетов"""
-    prs = PPTXPresentation()
-    slide = prs.slides.add_slide(prs.slide_layouts[1])
-    slide.shapes.title.text = "Bullets"
-    body = slide.placeholders[1].text_frame
-    body.text = f"Bullet 1"
-    for i in range(2, bullets + 1):
-        p = body.add_paragraph()
-        p.text = f"Bullet {i}"
     buffer = io.BytesIO()
     prs.save(buffer)
     return buffer.getvalue()

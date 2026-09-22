@@ -2,7 +2,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from app.models.presentation import (
+from app.models.legacy_presentation import (
     BBox,
     ElementType,
     ImageElement,

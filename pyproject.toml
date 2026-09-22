@@ -14,6 +14,7 @@ dependencies = [
     "lxml",
     "pydantic>=2",
     "pydantic-settings",
+    "pytest>=9.1.1",
     "python-dotenv",
     "python-pptx",
     "sqlalchemy>=2.0.52",
@@ -29,6 +30,11 @@ dev = [
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+pythonpath = ["services/parsing-service"]
+markers = [
+    "integration: tests that require running docker services",
+    "e2e: end-to-end tests requiring kafka + file-service + parser-service",
+]
 
 [tool.ruff]
 line-length = 100
