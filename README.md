@@ -4,27 +4,117 @@ ExpoSlides превращает PPTX-шаблон и текстовый сцен
 Локальный pipeline последовательно разбирает шаблон, генерирует проверенный контент через
 GigaChat и собирает итоговый PPTX.
 
-## Быстрый старт
+## Быстрый старт: интерфейс в браузере
 
-Требуются `uv`, Python 3.11–3.13 и доступ к GigaChat API.
+Команды ниже предназначены для терминала macOS или Linux. Нужны Git,
+[uv](https://docs.astral.sh/uv/getting-started/installation/) и доступ к GigaChat API.
+Проект использует Python **3.12** из `.python-version`; окружением управляет `uv`.
+Для локального запуска достаточно Python-приложения: отдельная сборка frontend,
+Node.js, Docker, Kafka и генерация gRPC-модулей не требуются.
+
+### 1. Скачать проект и установить зависимости
+
+Актуальная версия находится в ветке **`dev`**.
+
+Если `uv` ещё не установлен, на macOS с Homebrew выполните `brew install uv`;
+другие способы приведены в [инструкции uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 ```bash
+git clone --branch dev https://github.com/nebel310/ExpoSlides.git
+cd ExpoSlides
+uv python install 3.12
 uv sync --locked
+```
+
+Все дальнейшие команды выполняйте из папки `ExpoSlides`, где находится `pyproject.toml`.
+
+### 2. Настроить GigaChat
+
+Один раз создайте локальный файл настроек:
+
+```bash
 cp -n .env.example services/content-service/.env
 ```
 
-Укажите реальный `LLM_API_KEY` только в локальном
-`services/content-service/.env`; этот файл исключён из Git.
-Локальный CLI, веб-интерфейс и офлайн-тесты не требуют генерации gRPC-модулей:
-сетевые компоненты загружаются только при запуске сетевого режима сервиса.
+Откройте `services/content-service/.env` в текстовом редакторе и замените
+`LLM_API_KEY=your-api-key` своим **ключом авторизации (Authorization key)** GigaChat API
+([о ключе в документации GigaChat](https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/post-token)).
+Приложение передаёт его как `credentials`; краткоживущий `access_token` сюда не подходит.
+Реальный ключ хранится только в этом локальном файле, который исключён из Git.
+Команда `cp -n` сохраняет уже существующий файл настроек.
 
-Запуск из корня репозитория:
+Для персонального доступа оставьте `LLM_SCOPE=GIGACHAT_API_PERS`. Если ваш доступ использует
+другой scope, укажите его. Интерфейс по умолчанию использует `GigaChat-2-Pro`
+через `LLM_FAST_MODEL` и `LLM_FAST_REPAIR_MODEL`; остальные значения можно оставить из примера.
+
+### 3. Установить программы для просмотра слайдов
+
+Чтобы видеть **цвета, картинки и оформление**, нужны
+[LibreOffice](https://formulae.brew.sh/cask/libreoffice) и
+[Poppler](https://formulae.brew.sh/formula/poppler).
+
+macOS с Homebrew:
+
+```bash
+brew install --cask libreoffice
+brew install poppler
+```
+
+Ubuntu / Debian:
+
+```bash
+sudo apt update
+sudo apt install libreoffice poppler-utils
+```
+
+`pdftoppm` из Poppler должен быть доступен в `PATH`. LibreOffice ищется как `soffice`
+или `libreoffice` в `PATH`, а на macOS также в `/Applications/LibreOffice.app`.
+Без этих программ генерация и скачивание PPTX работают, но вместо изображений слайдов
+отображается текстовая схема. Если установили их при работающем сервере, перезапустите его.
+
+### 4. Запустить и открыть страницу
+
+```bash
+uv run python -m exposlides.web
+```
+
+Оставьте терминал открытым и перейдите в браузере на **[http://127.0.0.1:8765](http://127.0.0.1:8765)**.
+
+1. Загрузите PPTX-шаблон с текстовыми заполнителями PowerPoint (placeholders).
+2. Вставьте текст доклада или импортируйте `.txt` в UTF-8.
+3. При необходимости ограничьте количество слайдов и нажмите «Создать презентацию».
+4. После сборки просмотрите результат и скачайте PPTX.
+
+Остановка сервера — **Ctrl+C** в его терминале. Перед остановкой скачайте результат:
+файлы сессии хранятся временно и удаляются при завершении сервера.
+
+### Повторный запуск и другой порт
+
+После первоначальной настройки достаточно из корня проекта выполнить:
+
+```bash
+uv run python -m exposlides.web
+```
+
+Если порт 8765 занят:
+
+```bash
+uv run python -m exposlides.web --port 8766
+```
+
+Тогда откройте [http://127.0.0.1:8766](http://127.0.0.1:8766).
+После изменения `.env` также перезапустите сервер.
+
+## Запуск из командной строки
+
+После той же установки и настройки GigaChat презентацию можно собрать без интерфейса:
 
 ```bash
 uv run python -m exposlides \
   --template /path/to/template.pptx \
   --script /path/to/script.txt \
   --output /path/to/result.pptx \
+  --generation-mode fast \
   --max-slides 5
 ```
 
