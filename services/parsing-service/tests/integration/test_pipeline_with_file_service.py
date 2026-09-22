@@ -55,7 +55,7 @@ async def test_upload_reports_pptx_type(real_file_client, uploaded_pptx) -> None
     assert info["content_type"] == (
         "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     )
-    assert info["file_type"] == "pptx"
+    assert info["original_name"] == "template.pptx"
     assert info["size"] == len(original)
 
 
@@ -323,7 +323,7 @@ async def _get_file_info(file_client, file_id: str) -> dict:
         )
         return {
             "file_id": response.file_id,
+            "original_name": response.original_name,
             "content_type": response.content_type,
-            "file_type": response.file_type,
             "size": response.size,
         }
