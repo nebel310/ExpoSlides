@@ -18,6 +18,7 @@ dependencies = [
     "python-dotenv",
     "python-pptx",
     "sqlalchemy>=2.0.52",
+    "streamlit>=1.64,<2",
 ]
 
 [dependency-groups]
