@@ -21,6 +21,7 @@ from app.models.presentation import (
     ThemeInfo,
 )
 from app.parsers.base import BaseParser
+from app.parsers.text_style import inherited_font
 from lxml import etree
 from pptx import Presentation as PPTXPresentation
 from pptx.enum.dml import MSO_COLOR_TYPE
@@ -28,6 +29,10 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.text import PP_ALIGN
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from pptx.oxml.ns import qn
+from pptx.shapes.base import BaseShape
+from pptx.slide import Slide as PPTXSlide
+from pptx.slide import SlideLayout as PPTXSlideLayout
+from pptx.text.text import TextFrame
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +94,7 @@ class PPTXParser(BaseParser):
         elements: list[SlideElement] = []
         for shape in slide.shapes:
             element_id = f"slide-{index}-shape-{shape.shape_id}"
-            elem = cls._parse_shape(shape, theme, element_id)
+            elem = cls._parse_shape(shape, theme, element_id, slide)
             if elem:
                 elements.append(elem)
 
@@ -127,7 +132,7 @@ class PPTXParser(BaseParser):
 
         for shape in layout.shapes:
             element_id = f"layout-{index}-shape-{shape.shape_id}"
-            elem = cls._parse_shape(shape, theme, element_id)
+            elem = cls._parse_shape(shape, theme, element_id, layout)
             if elem:
                 elements.append(elem)
                 if shape.is_placeholder:
@@ -162,6 +167,7 @@ class PPTXParser(BaseParser):
         shape,
         theme: ThemeInfo | None,
         element_id: str,
+        owner: PPTXSlide | PPTXSlideLayout,
     ) -> SlideElement | None:
         """Извлекает данные из одной фигуры слайда"""
         bbox = BBox(
@@ -203,7 +209,7 @@ class PPTXParser(BaseParser):
 
         if shape.has_text_frame:
             text = cls._parse_text_frame(
-                shape.text_frame, placeholder_type, theme
+                shape.text_frame, placeholder_type, theme, shape, owner
             )
             return SlideElement(
                 id=element_id,
@@ -245,7 +251,12 @@ class PPTXParser(BaseParser):
 
     @classmethod
     def _parse_text_frame(
-        cls, text_frame, placeholder_type: str | None, theme: ThemeInfo | None
+        cls,
+        text_frame: TextFrame,
+        placeholder_type: str | None,
+        theme: ThemeInfo | None,
+        shape: BaseShape,
+        owner: PPTXSlide | PPTXSlideLayout,
     ) -> TextElement:
         """Извлекает текст и стили из текстовой рамки"""
         paragraphs: list[Paragraph] = []
@@ -254,13 +265,14 @@ class PPTXParser(BaseParser):
         for para in text_frame.paragraphs:
             runs: list[Run] = []
             para_text = ""
+            inherited_size, inherited_name = inherited_font(shape, para, owner)
 
             for run in para.runs:
                 runs.append(
                     Run(
                         text=run.text,
                         style=cls._extract_style(
-                            run.font, para, placeholder_type, theme
+                            run.font, para, placeholder_type, theme, inherited_size, inherited_name
                         ),
                     )
                 )
@@ -298,12 +310,14 @@ class PPTXParser(BaseParser):
         paragraph,
         placeholder_type: str | None,
         theme: ThemeInfo | None,
+        inherited_size: float | None = None,
+        inherited_name: str | None = None,
     ) -> TextStyle:
         """Извлекает стиль текста с учётом темы"""
         # Шрифт
-        font_name = font.name
+        font_name = font.name or inherited_name
         if font_name is None:
-            if placeholder_type in ("TITLE", "SUBTITLE", "SECTION_HEADER"):
+            if placeholder_type in ("TITLE", "CENTER_TITLE", "SUBTITLE", "SECTION_HEADER"):
                 font_name = theme.fonts.get("major") if theme else None
             else:
                 font_name = theme.fonts.get("minor") if theme else None
@@ -345,7 +359,7 @@ class PPTXParser(BaseParser):
         underline = bool(font.underline)
 
         # Размер
-        size_pt = font.size.pt if font.size else None
+        size_pt = font.size.pt if font.size else inherited_size
 
         # Выравнивание из paragraph
         alignment = None

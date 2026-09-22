@@ -25,13 +25,24 @@ STAGE_LABELS = {
     "content": "генерация контента",
     "builder": "сборка презентации",
 }
+CONTENT_ERROR_CODES = {
+    20: "invalid_response",
+    21: "content_validation",
+    22: "timeout",
+    23: "auth",
+    24: "network",
+}
+CONTENT_ERROR_MARKER = "EXPOSLIDES_CONTENT_ERROR="
 
 
 class PipelineError(RuntimeError):
     """Ошибка входных данных, отдельного этапа или итоговой проверки pipeline."""
 
-    def __init__(self, message: str, *, stage: str | None = None) -> None:
+    def __init__(
+        self, message: str, *, stage: str | None = None, error_code: str | None = None,
+    ) -> None:
         self.stage = stage
+        self.error_code = error_code if error_code in CONTENT_ERROR_CODES.values() else "unknown"
         if stage is not None:
             message = f"Этап «{STAGE_LABELS.get(stage, stage)}»: {message}"
         super().__init__(message)
@@ -150,6 +161,7 @@ def _run_stage(
         raise PipelineError(
             f"процесс завершился с кодом {completed.returncode}",
             stage=stage,
+            error_code=CONTENT_ERROR_CODES.get(completed.returncode) if stage == "content" else None,
         )
     try:
         output_is_valid = expected_output.is_file() and expected_output.stat().st_size > 0
@@ -266,6 +278,7 @@ def run_pipeline(
     max_slides: int | None = None,
     artifacts_dir: str | Path | None = None,
     force: bool = False,
+    generation_mode: str = "standard",
 ) -> PipelineResult:
     """Запустить parser, content и builder последовательно в изолированных процессах."""
     template_path = _validate_input_file(template, label="PPTX-шаблон", suffix=".pptx")
@@ -273,6 +286,8 @@ def run_pipeline(
     output_path = _validate_output_path(output, template_path=template_path, force=force)
     if max_slides is not None and max_slides < 1:
         raise PipelineError("max_slides должен быть положительным целым числом")
+    if generation_mode not in {"standard", "fast"}:
+        raise PipelineError("generation_mode должен быть standard или fast")
 
     staged_output: Path | None = None
     try:
@@ -310,6 +325,8 @@ def run_pipeline(
             ]
             if max_slides is not None:
                 content_arguments.extend(["--max-slides", str(max_slides)])
+            if generation_mode == "fast":
+                content_arguments.extend(["--generation-mode", "fast"])
 
             content_environment = os.environ.copy()
             content_environment["LOG_FILE"] = str(work_directory / "content-service.log")
@@ -376,6 +393,12 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         help="Максимальное число выбранных слайдов",
     )
     parser.add_argument(
+        "--generation-mode",
+        choices=("standard", "fast"),
+        default="standard",
+        help="Режим текста: standard — по слайдам; fast — пакетная генерация",
+    )
+    parser.add_argument(
         "--artifacts-dir",
         type=Path,
         help="Каталог, внутри которого сохранить отдельный набор промежуточных файлов запуска",
@@ -399,9 +422,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_slides=arguments.max_slides,
             artifacts_dir=arguments.artifacts_dir,
             force=arguments.force,
+            generation_mode=arguments.generation_mode,
         )
     except PipelineError as error:
         print(f"Ошибка: {error}", file=sys.stderr)
+        if error.stage == "content":
+            print(f"{CONTENT_ERROR_MARKER}{error.error_code}", file=sys.stderr, flush=True)
         return 1
     except KeyboardInterrupt:
         print("Запуск прерван пользователем", file=sys.stderr)

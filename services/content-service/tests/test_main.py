@@ -2,7 +2,6 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from app import main as main_module
 
 
@@ -25,11 +24,11 @@ async def test_serve_starts_and_stops_all_components():
     grpc_server.start = AsyncMock()
     grpc_server.stop = AsyncMock()
 
-    with patch.object(main_module, "FileServiceClient", return_value=file_client), patch.object(
-        main_module, "KafkaProducer", return_value=producer
-    ), patch.object(main_module, "KafkaConsumer", return_value=consumer), patch.object(
-        main_module, "GrpcServer", return_value=grpc_server
-    ), patch.object(main_module, "ContentPipeline", return_value=pipeline), patch.object(
+    with patch("app.grpc.file_service_client.FileServiceClient", return_value=file_client), patch(
+        "app.kafka.producer.KafkaProducer", return_value=producer
+    ), patch("app.kafka.consumer.KafkaConsumer", return_value=consumer), patch(
+        "app.grpc.server.GrpcServer", return_value=grpc_server
+    ), patch("app.services.content_pipeline.ContentPipeline", return_value=pipeline), patch.object(
         main_module, "setup_logging"
     ):
 
