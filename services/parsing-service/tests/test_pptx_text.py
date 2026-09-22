@@ -205,14 +205,14 @@ def test_resolve_font_major_placeholder_prefix() -> None:
 
 
 def test_parse_text_frame_empty(tmp_path: Path) -> None:
-    """Пустой text_frame возвращает пустой список параграфов"""
+    """Пустой text_frame возвращает None"""
     prs = PPTXPresentation()
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     box = slide.shapes.add_textbox(Emu(0), Emu(0), Emu(9144000), Emu(914400))
 
     result = text_module.parse_text_frame(box.text_frame, None, None)
 
-    assert result.paragraphs == []
+    assert result is None
 
 
 def test_parse_text_frame_run_without_text(tmp_path: Path) -> None:

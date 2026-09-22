@@ -112,14 +112,15 @@ def parse_shape(
 
     if getattr(shape, "has_text_frame", False):
         text = text_module.parse_text_frame(shape.text_frame, placeholder_kind, theme)
-        # placeholder всегда TEXT — независимо от auto_shape_type
+
         if placeholder_kind is not None:
             return SlideElement(type=ElementType.TEXT, text=text, **common)
-        # автофигура (round rect, arrow и т.п.) — SHAPE, даже если у неё есть текст
+
         if geometry is not None and geometry.shape_type is not None:
             return SlideElement(type=ElementType.SHAPE, text=text, **common)
-        # чистый textbox — TEXT
-        return SlideElement(type=ElementType.TEXT, text=text, **common)
+
+        if text is not None:
+            return SlideElement(type=ElementType.TEXT, text=text, **common)
 
     return SlideElement(type=ElementType.SHAPE, **common)
 

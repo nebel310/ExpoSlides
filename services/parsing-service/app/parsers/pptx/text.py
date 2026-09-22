@@ -24,7 +24,7 @@ def parse_text_frame(
     text_frame,
     placeholder_kind: PlaceholderKind | None,
     theme: ThemeInfo | None,
-) -> TextElement:
+) -> TextElement | None:
     """Извлекает параграфы и runs с индивидуальными стилями"""
     paragraphs: list[Paragraph] = []
 
@@ -52,6 +52,8 @@ def parse_text_frame(
             )
         )
 
+    if not paragraphs:
+        return None
     return TextElement(paragraphs=paragraphs)
 
 
