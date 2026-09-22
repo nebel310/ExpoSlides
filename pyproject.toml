@@ -14,6 +14,7 @@ dependencies = [
     "lxml",
     "pydantic>=2",
     "pydantic-settings",
+    "pytest>=9.1.1",
     "python-dotenv",
     "python-pptx",
     "sqlalchemy>=2.0.52",

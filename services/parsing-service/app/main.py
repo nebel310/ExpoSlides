@@ -12,7 +12,7 @@ from app.grpc.file_service_client import FileServiceClient
 from app.grpc.server import GrpcServer
 from app.kafka.consumer import TaskCreatedConsumer
 from app.kafka.producer import KafkaProducer
-from app.parsers.pptx_parser import PPTXParser
+from app.parsers.pptx import PPTXParser
 from app.services.parser_pipeline import ParserPipeline
 
 logger = logging.getLogger(__name__)
@@ -32,8 +32,9 @@ async def run_cli(input_pptx: str | Path, output_json: str | Path) -> Path:
     if output_path.suffix.casefold() != ".json":
         raise ValueError(f"Ожидался выходной файл .json: {output_path}")
 
-    presentation = await PPTXParser.parse(input_path)
-    payload = presentation.model_dump_json(indent=2)
+    result = await PPTXParser.parse(input_path)
+    presentation = result.presentation
+    payload = presentation.model_dump_json(indent=2, exclude_none=True)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = output_path.with_name(f".{output_path.name}.{uuid4().hex}.tmp")
