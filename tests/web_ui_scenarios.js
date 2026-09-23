@@ -42,11 +42,12 @@ function completedJob(id = "done", count = 2) {
   return { id, status: "completed", stage: "builder", slide_count: count };
 }
 
-function harness({ routes = {}, savedJob = null } = {}) {
+function harness({ routes = {}, savedJob = null, readFile = async () => "data:application/octet-stream;base64,UEs=" } = {}) {
   const elements = new Map();
   const timers = new Map();
   const storage = new Map(savedJob ? [["exposlides-job", savedJob]] : []);
   const calls = [];
+  const fileReads = [];
   let timerId = 0;
   let document;
 
@@ -150,13 +151,26 @@ function harness({ routes = {}, savedJob = null } = {}) {
     },
     AbortController,
     TextDecoder,
+    FileReader: class {
+      readAsDataURL(file) {
+        fileReads.push(file);
+        Promise.resolve().then(() => readFile(file)).then((result) => {
+          this.result = result;
+          this.onload();
+        }, (error) => {
+          this.error = error;
+          this.onerror();
+        });
+      }
+    },
     console,
     confirm: () => true,
     setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
     clearTimeout(id) { timers.delete(id); },
     async fetch(url, options) {
       calls.push({ url, options });
-      if (url === "/api/session") return response({ token: "offline-token" });
+      if (url === "/api/session" && !Object.hasOwn(routes, url)) return response({ token: "offline-token" });
+      if (url === "/api/library" && !Object.hasOwn(routes, url)) return response({ persistent: false, templates: [], jobs: [] });
       assert.ok(Object.hasOwn(routes, url), `Unexpected API request ${url}`);
       const route = routes[url];
       return typeof route === "function" ? route(options) : response(route);
@@ -165,6 +179,7 @@ function harness({ routes = {}, savedJob = null } = {}) {
   vm.runInContext(appSource, context, { filename: "app.js" });
   return {
     calls,
+    fileReads,
     element: (id) => document.getElementById(id),
     evaluate: (code) => vm.runInContext(code, context),
     async call(name, ...args) {
@@ -205,6 +220,210 @@ function assertResult(app, result, slide = 0) {
 }
 
 const scenarios = {
+  async parallel_generations() {
+    const late = deferred();
+    const first = { id: "first", status: "running", stage: "content" };
+    const second = { id: "second", status: "running", stage: "parser" };
+    const app = await withTemplate({
+      "/api/jobs/first": () => late.promise,
+      "/api/jobs/second": second,
+      "/api/jobs": second,
+    });
+    app.element("script").value = "Первый текст";
+    await app.call("renderJob", first);
+    const polling = app.call("pollJob", "first");
+    await app.element("new-presentation").click();
+    assert.equal(app.element("generate-button").disabled, false);
+    app.element("script").value = "Второй текст";
+    await app.element("presentation-form").dispatch("submit");
+    await app.flush();
+    assert.equal(app.evaluate("state.job.id"), "second");
+    late.resolve(response(completedJob("first")));
+    await polling;
+    await app.flush();
+    assert.equal(app.evaluate("state.job.id"), "second");
+    assert.equal(app.evaluate("state.busy"), true);
+    assert.equal(app.element("parallel-jobs").children.length, 2);
+    assert.match(app.element("parallel-jobs").textContent, /Готово/);
+    const submitted = app.calls.find(call => call.url === "/api/jobs");
+    assert.equal(JSON.parse(submitted.options.body).script, "Второй текст");
+    assert.equal(JSON.parse(app.evaluate('sessionStorage.getItem("exposlides-jobs")')).length, 2);
+  },
+  async temporary_library_hidden() {
+    const app = harness();
+    await app.flush();
+    assert.equal(app.element("library-panel").hidden, true);
+    assert.match(app.element("help-storage").textContent, /до остановки/);
+  },
+
+  async saved_template_selection() {
+    const template = presentation("saved template", 3);
+    template.name = "<img src=x onerror=alert(1)>.pptx";
+    const app = harness({ routes: {
+      "/api/library": { persistent: true, templates: [template], jobs: [] },
+      "/api/templates/saved%20template/preview": template.preview,
+    } });
+    await app.flush();
+    app.element("script").value = "Мой исходный текст";
+    const button = app.element("library-templates").children[0].children[0];
+    assert.equal(app.element("library-panel").hidden, false);
+    assert.match(app.element("help-storage").textContent, /после перезапуска/);
+    assert.equal(button.children[0].textContent, template.name);
+    assert.equal(button.children[0].children.length, 0);
+    await button.click();
+    assert.equal(app.evaluate("state.template.id"), template.id);
+    assert.equal(app.element("template-name").textContent, template.name);
+    assert.equal(app.element("script").value, "Мой исходный текст");
+    assert.equal(app.element("generate-button").disabled, false);
+    assert.equal(app.element("max-slides").children.length, 4);
+    assert.equal(button.getAttribute("aria-pressed"), "true");
+    assert.equal(app.element("library-results-empty").hidden, false);
+  },
+
+  async saved_result_selection_race() {
+    const old = deferred();
+    const result = presentation("latest", 2);
+    const jobs = [completedJob("older"), completedJob("latest")];
+    const app = harness({ routes: {
+      "/api/library": { persistent: true, templates: [], jobs },
+      "/api/jobs/older/presentation": () => old.promise,
+      "/api/jobs/latest/presentation": result,
+    } });
+    await app.flush();
+    const row = app.element("library-results").children[0];
+    assert.equal(row.children[1].href, "/api/jobs/older/download");
+    assert.equal(row.children[1].getAttribute("download"), "presentation.pptx");
+    await row.children[0].click();
+    assert.equal(app.element("preview-loading").hidden, false);
+    await app.element("library-results").children[1].children[0].click();
+    await app.flush();
+    old.resolve(response(presentation("older", 2)));
+    await app.flush();
+    assertResult(app, result);
+    assert.equal(app.evaluate('sessionStorage.getItem("exposlides-job")'), "latest");
+    assert.equal(app.element("library-results").children[1].children[0].getAttribute("aria-pressed"), "true");
+  },
+
+  async saved_selection_locked_during_generation() {
+    const app = await withTemplate({
+      "/api/library": { persistent: true, templates: [presentation("saved", 2)], jobs: [completedJob("done")] },
+    });
+    await app.call("renderJob", { id: "running", status: "running", stage: "content" });
+    for (const id of ["library-templates", "library-results"]) {
+      const button = app.element(id).children[0].children[0];
+      assert.equal(button.disabled, true);
+      await button.click();
+    }
+    assert.equal(app.evaluate("state.job.id"), "running");
+    assert.equal(app.evaluate("state.template.id"), "template");
+    assert.equal(app.element("library-results").children[0].children[1].href, "/api/jobs/done/download");
+  },
+
+  async library_refreshes_after_saved_files() {
+    const templates = [];
+    const jobs = [];
+    const uploaded = presentation("uploaded", 2);
+    const example = { ...presentation("example", 2), script: "Пример текста" };
+    const result = presentation("done", 2);
+    const app = harness({ routes: {
+      "/api/library": () => response({ persistent: true, templates: [...templates], jobs: [...jobs] }),
+      "/api/templates": () => { templates.push(uploaded); return response(uploaded); },
+      "/api/example": () => { templates.push(example); return response(example); },
+      "/api/jobs/done/presentation": result,
+    } });
+    await app.flush();
+    assert.equal(app.element("library-templates-empty").hidden, false);
+    await app.call("uploadTemplate", { name: "uploaded.pptx", size: 2 });
+    await app.flush();
+    assert.equal(app.element("library-templates").children.length, 1);
+    await app.call("loadExample");
+    await app.flush();
+    assert.equal(app.element("library-templates").children.length, 2);
+    jobs.push(completedJob());
+    await app.call("renderJob", completedJob());
+    await app.flush();
+    assert.equal(app.element("library-results").children.length, 1);
+    assert.equal(app.calls.filter(({ url }) => url === "/api/library").length, 4);
+    assertResult(app, result);
+  },
+
+  async library_failure_preserves_materials() {
+    let available = true;
+    const app = await withTemplate({
+      "/api/library": () => available
+        ? response({ persistent: true, templates: [presentation("saved", 2)], jobs: [] })
+        : response({ error: "Хранилище недоступно" }, 503),
+    });
+    available = false;
+    await app.call("showError", "Другая ошибка");
+    await app.call("renderJob", { id: "running", status: "running", stage: "content" });
+    await app.element("library-refresh").click();
+    assert.equal(app.element("library-panel").hidden, false);
+    assert.equal(app.element("library-status").hidden, false);
+    assert.match(app.element("library-status").textContent, /Попробуйте ещё раз/);
+    assert.equal(app.element("library-templates").children.length, 1);
+    assert.equal(app.element("library-refresh").disabled, false);
+    assert.equal(app.evaluate("state.template.id"), "template");
+    assert.equal(app.evaluate("state.job.id"), "running");
+    assert.equal(app.evaluate("state.busy"), true);
+    assert.equal(app.element("error-message").textContent, "Другая ошибка");
+  },
+
+  async stale_library_response() {
+    const old = deferred();
+    let calls = 0;
+    const app = harness({ routes: {
+      "/api/library": () => ++calls === 1 ? old.promise
+        : response({ persistent: true, templates: [presentation("latest", 2)], jobs: [] }),
+    } });
+    await app.flush();
+    assert.equal(app.element("library-refresh").disabled, true);
+    await app.call("refreshLibrary");
+    old.resolve(response({ persistent: false, templates: [], jobs: [] }));
+    await app.flush();
+    assert.equal(app.element("library-panel").hidden, false);
+    assert.equal(app.element("library-refresh").disabled, false);
+    assert.equal(app.element("library-templates").children.length, 1);
+    assert.match(app.element("library-templates").textContent, /latest/);
+  },
+
+  async saved_selection_wins_over_restored_job() {
+    const old = deferred();
+    const app = harness({ savedJob: "old", routes: {
+      "/api/library": { persistent: true, templates: [presentation("saved", 2)], jobs: [] },
+      "/api/templates/saved/preview": presentation("saved", 2).preview,
+      "/api/jobs/old": () => old.promise,
+    } });
+    await app.flush();
+    await app.element("library-templates").children[0].children[0].click();
+    old.resolve(response(completedJob("old")));
+    await app.flush();
+    assert.equal(app.evaluate("state.template.id"), "saved");
+    assert.equal(app.evaluate("state.job"), null);
+    assert.equal(app.element("slide-title").textContent, "saved title 1");
+    assert.ok(app.calls.every(({ url }) => !url.endsWith("/presentation")));
+  },
+
+  async saved_template_restores_preview_without_stale_selection() {
+    const old = deferred();
+    const templates = [presentation("first", 2, { status: "unavailable" }), presentation("second", 2, { status: "unavailable" })];
+    const app = harness({ routes: {
+      "/api/library": { persistent: true, templates, jobs: [] },
+      "/api/templates/first/preview": () => old.promise,
+      "/api/templates/second/preview": { status: "ready", slides: ["/restored/1.png", "/restored/2.png"] },
+    } });
+    await app.flush();
+    await app.element("library-templates").children[0].children[0].click();
+    await app.element("library-templates").children[1].children[0].click();
+    await app.flush();
+    assert.equal(app.element("rendered-slide").src, "/restored/1.png");
+    old.resolve(response({ status: "ready", slides: ["/stale/1.png", "/stale/2.png"] }));
+    await app.flush();
+    assert.equal(app.evaluate("state.template.id"), "second");
+    assert.equal(app.element("rendered-slide").src, "/restored/1.png");
+    assert.equal(app.calls.filter(({ url }) => url.endsWith("/preview")).length, 2);
+  },
+
   async completed_result() {
     const result = presentation("done", 2, { prefix: "generated" });
     result.width = 1200;
@@ -286,6 +505,91 @@ const scenarios = {
     await app.call("applyTemplate", presentation("replacement", 3));
     assert.equal(app.element("workspace").dataset.view, "materials");
     assert.equal(app.element("rendered-slide").src, "/images/replacement-1.png");
+  },
+
+  async template_upload_refreshes_session_after_reading_file() {
+    let token = "before-restart";
+    const fileRead = deferred();
+    const file = { name: "Шаблон.pptx", size: 2 };
+    const app = harness({
+      routes: {
+        "/api/session": () => response({ token }),
+        "/api/templates": presentation("uploaded", 2),
+      },
+      readFile: () => fileRead.promise,
+    });
+    await app.flush();
+    assert.equal(app.evaluate("state.token"), "before-restart");
+
+    const upload = app.call("uploadTemplate", file);
+    await app.flush();
+    assert.equal(app.evaluate("state.uploading"), true);
+    assert.equal(app.element("template-input").disabled, true);
+    assert.deepEqual(app.calls.filter(({ url }) => url !== "/api/library").map(({ url }) => url), ["/api/session"]);
+    assert.deepEqual(app.fileReads, [file]);
+
+    token = "after-restart";
+    fileRead.resolve("data:application/octet-stream;base64,UEs=");
+    await upload;
+    assert.deepEqual(app.calls.filter(({ url }) => url !== "/api/library").map(({ url }) => url), ["/api/session", "/api/session", "/api/templates"]);
+    const posted = app.calls.find(({ url }) => url === "/api/templates").options;
+    assert.equal(posted.headers["X-ExpoSlides-Token"], "after-restart");
+    assert.deepEqual(JSON.parse(posted.body), { name: file.name, data: "UEs=" });
+    assert.equal(app.evaluate("state.template.id"), "uploaded");
+    assert.equal(app.evaluate("state.uploading"), false);
+    assert.equal(app.element("template-input").disabled, false);
+    assert.equal(app.element("error-message").hidden, true);
+  },
+
+  async template_upload_forbidden_clears_session() {
+    const app = harness({ routes: {
+      "/api/templates": () => response({ error: "Сессия устарела. Обновите страницу." }, 403),
+    } });
+    await app.flush();
+    await app.call("uploadTemplate", { name: "Шаблон.pptx", size: 2 });
+
+    assert.equal(app.evaluate("state.token"), null);
+    assert.equal(app.evaluate("state.template"), null);
+    assert.equal(app.calls.filter(({ url }) => url === "/api/templates").length, 1);
+    assert.equal(app.element("error-message").textContent, "Сессия устарела. Обновите страницу.");
+    assert.equal(app.element("error-message").hidden, false);
+    assert.equal(app.evaluate("state.uploading"), false);
+    assert.equal(app.element("template-input").disabled, false);
+  },
+
+  async template_upload_stops_when_session_refresh_fails() {
+    let available = true;
+    const app = harness({ routes: {
+      "/api/session": () => available
+        ? response({ token: "before-restart" })
+        : response({ error: "Сервер временно недоступен." }, 503),
+    } });
+    await app.flush();
+    available = false;
+    await app.call("uploadTemplate", { name: "Шаблон.pptx", size: 2 });
+
+    assert.equal(app.fileReads.length, 1);
+    assert.deepEqual(app.calls.filter(({ url }) => url !== "/api/library").map(({ url }) => url), ["/api/session", "/api/session"]);
+    assert.equal(app.evaluate("state.template"), null);
+    assert.equal(app.evaluate("state.uploading"), false);
+    assert.equal(app.element("template-input").disabled, false);
+    assert.equal(app.element("generation-view").hidden, true);
+    assert.equal(app.element("upload-title").textContent, "Выберите файл");
+    assert.equal(app.element("error-message").textContent, "Сервер временно недоступен.");
+  },
+
+  async template_upload_network_failure_is_not_retried() {
+    const app = harness({ routes: {
+      "/api/templates": () => { throw app.evaluate('new TypeError("Failed to fetch")'); },
+    } });
+    await app.flush();
+    await app.call("uploadTemplate", { name: "Шаблон.pptx", size: 2 });
+
+    assert.equal(app.calls.filter(({ url }) => url === "/api/templates").length, 1);
+    assert.equal(app.evaluate("state.uploading"), false);
+    assert.equal(app.element("template-input").disabled, false);
+    assert.equal(app.element("error-message").textContent,
+      "Не удалось связаться с сервером. Проверьте подключение к интернету и попробуйте ещё раз.");
   },
 
   async stale_result_metadata() {

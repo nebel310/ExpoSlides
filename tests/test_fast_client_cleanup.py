@@ -128,7 +128,7 @@ def test_close_is_idempotent_and_next_request_gets_fresh_sdk(monkeypatch, servic
         async def aclose(self):
             self.close_count += 1
 
-    monkeypatch.setattr(llm, "GigaChat", SDK)
+    monkeypatch.setattr(llm, "ChatCompletionsClient", SDK)
     client = llm.FastLLMClient()
     first = client.client
 

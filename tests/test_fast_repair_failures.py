@@ -4,8 +4,8 @@ import asyncio
 import importlib
 from pathlib import Path
 
+import httpx
 import pytest
-from gigachat.exceptions import AuthenticationError
 
 CONTENT_SERVICE_ROOT = Path(__file__).resolve().parents[1] / "services" / "content-service"
 SOURCE = "Команда готовит запуск продукта и описывает стратегию развития."
@@ -111,7 +111,10 @@ def test_repair_failure_then_failed_candidates_stops_with_typed_error(monkeypatc
 
 @pytest.mark.parametrize("cause", [
     ConnectionError("connection failed"),
-    AuthenticationError("https://example.test", 401, b"unauthorized", None),
+    httpx.HTTPStatusError(
+        "unauthorized", request=httpx.Request("POST", "https://example.test"),
+        response=httpx.Response(401, content=b"unauthorized"),
+    ),
     TimeoutError("timeout"),
 ])
 def test_transport_auth_and_timeout_do_not_trigger_content_recovery(

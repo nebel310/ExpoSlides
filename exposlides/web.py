@@ -32,7 +32,9 @@ from pptx.dml.color import RGBColor
 from pptx.util import Inches, Pt
 
 from exposlides.cli import CONTENT_ERROR_MARKER, REPOSITORY_ROOT
+from exposlides.file_storage import FileServiceStorage, StorageError
 from exposlides.preview import PreviewRenderer
+from exposlides.web_catalog import WebCatalog
 
 STATIC_ROOT = Path(__file__).parent / "web_static"
 MAX_TEMPLATE_BYTES = 25 * 1024 * 1024
@@ -40,6 +42,11 @@ MAX_REQUEST_BYTES = (MAX_TEMPLATE_BYTES + 2) // 3 * 4 + 8192
 MAX_SCRIPT_LENGTH = 100_000
 MAX_UNCOMPRESSED_BYTES = 150 * 1024 * 1024
 MAX_TEMPLATE_SLIDES = 250
+STORAGE_UNAVAILABLE = "Не удалось обратиться к хранилищу файлов. Попробуйте ещё раз позже."
+STORAGE_SAVE_FAILED = (
+    "Не удалось сохранить презентацию в хранилище. Проверьте доступность хранилища "
+    "и запустите сборку ещё раз."
+)
 PREVIEW_UNAVAILABLE = (
     "Предпросмотр с оформлением недоступен на этом компьютере. "
     "Вы можете продолжить создание презентации."
@@ -92,7 +99,7 @@ STAGE_ERRORS = {
 }
 CONTENT_ERRORS = {
     "invalid_response": (
-        "GigaChat вернул ответ в неподходящем формате. "
+        "Модель Qwen вернула ответ в неподходящем формате. "
         "Не удалось исправить его автоматически. Запустите сборку ещё раз."
     ),
     "content_validation": (
@@ -100,14 +107,14 @@ CONTENT_ERRORS = {
         "исходным материалам и шаблону. Запустите сборку ещё раз."
     ),
     "timeout": (
-        "GigaChat не успел подготовить текст за отведённое время. "
+        "Модель Qwen не успела подготовить текст за отведённое время. "
         "Попробуйте запустить сборку ещё раз."
     ),
     "auth": (
-        "GigaChat отклонил доступ. Проверьте ключ и права доступа к модели в настройках сервиса."
+        "Сервис генерации отклонил доступ. Проверьте токен и права доступа к модели."
     ),
     "network": (
-        "Не удалось связаться с GigaChat или сервис временно недоступен. "
+        "Не удалось связаться с сервисом генерации или он временно недоступен. "
         "Проверьте соединение и попробуйте ещё раз."
     ),
     "unknown": STAGE_ERRORS["content"],
@@ -331,7 +338,11 @@ class Job:
                 ) is not None
         elif level == "WARNING":
             model = {"analysis": "ScriptAnalysis", "planning": "SlidePlan"}.get(phase)
-            prefixes = [r"Временная ошибка GigaChat HTTP (?:500|502|503|504), "]
+            prefixes = [
+                r"Временная ошибка LLM HTTP (?:429|500|502|503|504), ",
+                r"Временная ошибка OpenRouter HTTP (?:429|500|502|503|504), ",
+                r"Временная ошибка GigaChat HTTP (?:500|502|503|504), ",
+            ]
             if model is not None:
                 prefixes.append(f"Некорректный ответ LLM для {model}, ")
             if phase == "slides":
@@ -358,7 +369,29 @@ class PreviewTask:
 class Workspace:
     """Файлы и задания одной сессии локального сервера."""
 
-    def __init__(self, *, renderer: PreviewRenderer | None = None) -> None:
+    def __init__(
+        self, *, renderer: PreviewRenderer | None = None,
+        storage: FileServiceStorage | None = None, data_dir: Path | None = None,
+    ) -> None:
+        if (storage is None) != (data_dir is None):
+            raise ValueError("Хранилище и постоянный каталог должны задаваться вместе")
+        self.storage = storage
+        self.catalog = None
+        self.temporary = None
+        self.renderer = None
+        try:
+            self._initialize(data_dir, renderer)
+        except Exception:
+            if self.renderer is not None:
+                self.renderer.close()
+            if self.temporary is not None:
+                self.temporary.cleanup()
+            if self.catalog is not None:
+                self.catalog.close()
+            raise
+
+    def _initialize(self, data_dir: Path | None, renderer: PreviewRenderer | None) -> None:
+        self.catalog = WebCatalog(data_dir) if data_dir is not None else None
         self.temporary = tempfile.TemporaryDirectory(prefix="exposlides-web-")
         self.root = Path(self.temporary.name)
         self.token = secrets.token_urlsafe(32)
@@ -372,9 +405,94 @@ class Workspace:
         self.preview_files: dict[tuple[str, str], tuple[Path, ...]] = {}
         self.preview_queue: queue.Queue[PreviewTask | None] = queue.Queue()
         self.preview_worker: threading.Thread | None = None
+        self._restored_previews: set[tuple[str, str]] = set()
+        self._session_templates = 0
+        self._session_jobs = 0
+        if self.catalog is not None:
+            self._restore_library()
         if self.renderer.available:
             self.preview_worker = threading.Thread(target=self._render_previews, daemon=True)
             self.preview_worker.start()
+
+    def _restore_library(self) -> None:
+        """Восстановить каталог; PPTX скачиваются только при использовании."""
+        for identifier, record in self.catalog.library.templates.items():
+            metadata = record.metadata.model_dump()
+            metadata["preview"] = {"status": "unavailable", "message": PREVIEW_UNAVAILABLE}
+            self.templates[identifier] = metadata
+            self._restored_previews.add(("templates", identifier))
+        for identifier, record in self.catalog.library.jobs.items():
+            metadata = record.metadata.model_dump()
+            metadata["preview"] = {"status": "unavailable", "message": RESULT_PREVIEW_UNAVAILABLE}
+            directory = self.root / identifier
+            directory.mkdir()
+            self.jobs[identifier] = Job(
+                identifier, directory, record.template_id, record.max_slides,
+                status="completed", stage="complete", slide_count=metadata["slide_count"],
+                presentation=metadata,
+            )
+            self._restored_previews.add(("jobs", identifier))
+
+    def library(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "persistent": self.catalog is not None,
+                "templates": [
+                    {**metadata, "preview": dict(metadata["preview"])}
+                    for metadata in reversed(list(self.templates.values()))
+                ],
+                "jobs": [
+                    {**job.public(), "name": self.templates[job.template_id]["name"]}
+                    for job in reversed(list(self.jobs.values())) if job.status == "completed"
+                ],
+            }
+
+    def _cached_file(self, namespace: str, identifier: str) -> Path:
+        """Локальная копия нужна CLI и предпросмотру; источник — версия в хранилище."""
+        path = (
+            self.root / f"{identifier}.pptx" if namespace == "templates"
+            else self.jobs[identifier].directory / "result.pptx"
+        )
+        if not path.is_file() and self.catalog is not None:
+            records = (
+                self.catalog.library.templates if namespace == "templates"
+                else self.catalog.library.jobs
+            )
+            record = records[identifier]
+            data = self.storage.download(record.file.stored_file())
+            inspect_template(data, record.metadata.name)
+            self._write_cache(path, data)
+        return path
+
+    @staticmethod
+    def _write_cache(path: Path, data: bytes) -> None:
+        """Неполная локальная копия никогда не становится доступным PPTX."""
+        temporary = None
+        try:
+            descriptor, name = tempfile.mkstemp(prefix=".download-", dir=path.parent)
+            temporary = Path(name)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(data)
+            os.replace(temporary, path)
+        except OSError as error:
+            raise StorageError("Не удалось записать локальную копию файла.") from error
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def _restore_preview(self, namespace: str, identifier: str, metadata: dict) -> None:
+        key = (namespace, identifier)
+        if key in self._restored_previews and self.renderer.available:
+            path = self._cached_file(namespace, identifier)
+            self._queue_preview(namespace, path, metadata)
+            self._restored_previews.remove(key)
+
+    def download_result(self, job_id: str) -> bytes:
+        with self.lock:
+            job = self.get_job(job_id)
+            if job.status != "completed":
+                raise APIError("Презентация ещё не готова.", 409)
+            return self._cached_file("jobs", job_id).read_bytes()
 
     def add_template(self, name: str, data: bytes) -> dict[str, Any]:
         metadata = inspect_template(data, name)
@@ -382,12 +500,21 @@ class Workspace:
         with self.lock:
             if self.closed:
                 raise APIError("Сессия завершена. Перезапустите интерфейс.", 503)
-            if len(self.templates) >= 30:
+            if self._session_templates >= 30:
                 raise APIError("В этой сессии уже 30 шаблонов. Перезапустите интерфейс.", 409)
-            (self.root / f"{template_id}.pptx").write_bytes(data)
             metadata["id"] = template_id
+            path = self.root / f"{template_id}.pptx"
+            self._write_cache(path, data)
+            try:
+                if self.catalog is not None:
+                    file = self.storage.upload(name, data)
+                    self.catalog.save_template(template_id, metadata, file)
+            except Exception:
+                path.unlink(missing_ok=True)
+                raise
             self.templates[template_id] = metadata
-            self._queue_preview("templates", self.root / f"{template_id}.pptx", metadata)
+            self._session_templates += 1
+            self._queue_preview("templates", path, metadata)
             return {**metadata, "preview": dict(metadata["preview"])}
 
     def _queue_preview(self, namespace: str, source: Path, metadata: dict[str, Any]) -> None:
@@ -413,6 +540,7 @@ class Workspace:
         with self.lock:
             if template_id not in self.templates:
                 raise APIError("Шаблон не найден в этой сессии.", 404)
+            self._restore_preview("templates", template_id, self.templates[template_id])
             return dict(self.templates[template_id]["preview"])
 
     def get_preview_image(self, template_id: str, index: int) -> bytes:
@@ -429,6 +557,7 @@ class Workspace:
             job = self.get_job(job_id)
             if job.status != "completed" or job.presentation is None:
                 raise APIError("Презентация ещё не готова.", 409)
+            self._restore_preview("jobs", job_id, job.presentation)
             return {**job.presentation, "preview": dict(job.presentation["preview"])}
 
     def get_job_preview(self, job_id: str) -> dict[str, Any]:
@@ -515,16 +644,16 @@ class Workspace:
                     f"В шаблоне только {template_slide_count} слайдов. "
                     "Уменьшите количество или выберите другой шаблон."
                 )
-            if any(job.status == "running" for job in self.jobs.values()):
-                raise APIError("Дождитесь завершения текущей презентации.", 409)
-            if len(self.jobs) >= 50:
+            if self._session_jobs >= 50:
                 raise APIError("В этой сессии уже 50 запусков. Перезапустите интерфейс.", 409)
+            self._cached_file("templates", template_id)
             job_id = uuid4().hex
             directory = self.root / job_id
             directory.mkdir()
             (directory / "script.txt").write_text(script, encoding="utf-8")
             job = Job(job_id, directory, template_id, max_slides)
             self.jobs[job_id] = job
+            self._session_jobs += 1
             worker = threading.Thread(target=self._run_job, args=(job,), daemon=True)
             self.workers.append(worker)
             worker.start()
@@ -544,6 +673,11 @@ class Workspace:
             if self.closed:
                 return
             metadata["id"] = job.id
+            if self.catalog is not None:
+                file = self.storage.upload("Презентация.pptx", result.read_bytes(), task_id=job.id)
+                self.catalog.save_result(
+                    job.id, metadata, file, template_id=job.template_id, max_slides=job.max_slides,
+                )
             job.presentation = metadata
             job.slide_count = metadata["slide_count"]
             job.stage = "complete"
@@ -587,6 +721,11 @@ class Workspace:
             if process.wait() != 0:
                 raise RuntimeError("pipeline failed")
             self._complete_job(job)
+        except StorageError:
+            with self.lock:
+                job.error = STORAGE_SAVE_FAILED
+                job.error_code = None
+                job.status = "failed"
         except Exception:
             with self.lock:
                 if job.stage == "content":
@@ -628,6 +767,10 @@ class Workspace:
             self.preview_worker is None or not self.preview_worker.is_alive()
         ):
             self.temporary.cleanup()
+            if self.catalog is not None:
+                self.catalog.close()
+            if self.storage is not None:
+                self.storage.close()
 
 
 class WebServer(ThreadingHTTPServer):
@@ -711,6 +854,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send((STATIC_ROOT / filename).read_bytes(), content_type)
             elif path == "/api/session":
                 self._json({"token": self.server.workspace.token})
+            elif path == "/api/library":
+                self._json(self.server.workspace.library())
             elif path == "/api/example":
                 self._json(self.server.workspace.example())
             elif path.startswith("/api/templates/"):
@@ -754,12 +899,14 @@ class WebHandler(BaseHTTPRequestHandler):
                         raise APIError("Презентация ещё не готова.", 409)
                     else:
                         self._send(
-                            (job.directory / "result.pptx").read_bytes(),
+                            self.server.workspace.download_result(job_id),
                             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
                             Content_Disposition='attachment; filename="ExpoSlides.pptx"',
                         )
             else:
                 raise APIError("Страница не найдена.", 404)
+        except StorageError:
+            self._json({"error": STORAGE_UNAVAILABLE}, 503)
         except APIError as error:
             self._json({"error": str(error)}, error.status)
         except (BrokenPipeError, ConnectionResetError):
@@ -769,18 +916,22 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
-            self._guard(write=True)
+            self._guard()
             path = urlsplit(self.path).path
             if path not in {"/api/templates", "/api/jobs"}:
                 raise APIError("Страница не найдена.", 404)
             payload = self._body()
+            # При старой сессии сначала дочитываем ограниченное тело загрузки:
+            # ранний ответ закрывает соединение, пока браузер ещё отправляет файл.
+            self._guard(write=True)
             if path == "/api/jobs":
                 self._json(self.server.workspace.create_job(payload), 202)
                 return
             name, encoded = payload.get("name"), payload.get("data")
             if not isinstance(name, str) or not name.lower().endswith(".pptx"):
                 raise APIError("Выберите файл с расширением .pptx.")
-            name = name.replace("\\", "/").rsplit("/", 1)[-1][:180]
+            basename = name.replace("\\", "/").rsplit("/", 1)[-1]
+            name = basename[:-5][:175] + ".pptx"
             if not isinstance(encoded, str):
                 raise APIError("Не удалось прочитать загруженный файл.")
             try:
@@ -788,6 +939,8 @@ class WebHandler(BaseHTTPRequestHandler):
             except (binascii.Error, ValueError) as error:
                 raise APIError("Не удалось прочитать загруженный файл.") from error
             self._json(self.server.workspace.add_template(name, data), 201)
+        except StorageError:
+            self._json({"error": STORAGE_UNAVAILABLE}, 503)
         except APIError as error:
             self._json({"error": str(error)}, error.status)
         except (BrokenPipeError, ConnectionResetError):
@@ -799,13 +952,35 @@ class WebHandler(BaseHTTPRequestHandler):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Локальный веб-интерфейс ExpoSlides")
     parser.add_argument("--port", type=int, default=8765, help="Локальный порт (по умолчанию 8765)")
+    parser.add_argument(
+        "--file-service", default=os.environ.get("EXPOSLIDES_FILE_SERVICE"),
+        help="Адрес file-service, например 127.0.0.1:50051",
+    )
+    parser.add_argument(
+        "--data-dir", type=Path, default=os.environ.get("EXPOSLIDES_DATA_DIR"),
+        help="Постоянный каталог библиотеки (вместе с --file-service)",
+    )
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("порт должен быть числом от 1 до 65535")
+    if bool(args.file_service) != bool(args.data_dir):
+        parser.error("--file-service и --data-dir должны задаваться вместе")
+    storage = None
+    workspace = None
     try:
-        server = WebServer(("127.0.0.1", args.port))
-    except OSError:
-        print("Не удалось запустить интерфейс. Попробуйте другой --port.", file=sys.stderr)
+        if args.file_service:
+            storage = FileServiceStorage(args.file_service)
+            workspace = Workspace(storage=storage, data_dir=args.data_dir.expanduser().resolve())
+        server = WebServer(("127.0.0.1", args.port), workspace=workspace)
+    except (OSError, StorageError, ValueError):
+        if workspace is not None:
+            workspace.close()
+        elif storage is not None:
+            storage.close()
+        print(
+            "Не удалось запустить интерфейс. Проверьте порт, адрес хранилища "
+            "и постоянный каталог.", file=sys.stderr,
+        )
         return 1
     print(f"ExpoSlides: http://127.0.0.1:{args.port}", flush=True)
     try:

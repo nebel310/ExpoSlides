@@ -155,6 +155,23 @@ h1, h2, h3, p { margin: 0; }
 .section-heading h3 { font-size: 13px; font-weight: 600; }
 .field-format { color: #737b89; font-size: 10px; font-weight: 550; letter-spacing: .4px; }
 
+/* Saved materials */
+.library-panel { margin: 20px 0 24px; padding: 16px 0; border-block: 1px solid var(--line); }
+.library-panel .section-heading { margin-bottom: 4px; }
+.library-panel .text-button { color: var(--muted); }
+.library-group summary { padding: 9px 0; font-size: 12px; cursor: pointer; }
+.library-group summary:focus-visible { outline: 3px solid #7795ff; outline-offset: 3px; }
+.library-list { list-style: none; margin: 0; padding: 0; max-height: 200px; overflow-y: auto; scrollbar-width: thin; }
+.library-item { display: flex; align-items: center; gap: 4px; border-radius: 6px; }
+.library-open { min-width: 0; flex: 1; padding: 10px 8px; text-align: left; border-radius: 6px; }
+.library-open:hover, .library-download:hover { background: var(--subtle); }
+.library-open[aria-pressed="true"] { background: var(--accent-soft); }
+.library-open strong { display: block; font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.library-open span { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
+.library-download { padding: 10px 12px; border-radius: 6px; text-decoration: none; color: var(--accent); }
+.library-status { margin-bottom: 8px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.library-group .field-hint { padding: 4px 0 8px; }
+
 /* Source material */
 .dropzone {
   display: flex;

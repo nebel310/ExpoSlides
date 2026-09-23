@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
-import ssl
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
-from gigachat.exceptions import AuthenticationError, RateLimitError, ResponseError, ServerError
 from httpx import ConnectError
 from pydantic import BaseModel, Field, ValidationError
 
@@ -32,6 +30,12 @@ def response(content):
     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
 
+def http_error(status):
+    request = httpx.Request("POST", "https://example.test/private-url")
+    response = httpx.Response(status, request=request, content=b"private response body")
+    return httpx.HTTPStatusError("private response body", request=request, response=response)
+
+
 def install_async_response(llm, monkeypatch, content):
     calls = []
 
@@ -43,15 +47,13 @@ def install_async_response(llm, monkeypatch, content):
     return calls
 
 
-def test_fast_profile_is_lazy_and_configures_sdk_without_legacy_changes(
+def test_fast_profile_is_lazy_and_configures_separate_transport_timeout(
     monkeypatch, service_importer
 ):
-    import gigachat
-
     constructors = []
     chats = []
 
-    class FakeGigaChat:
+    class FakeChatCompletionsClient:
         def __init__(self, **kwargs):
             constructors.append(kwargs)
 
@@ -59,61 +61,56 @@ def test_fast_profile_is_lazy_and_configures_sdk_without_legacy_changes(
             chats.append(chat)
             return response('{"title":"Кратко"}')
 
-    monkeypatch.setattr(gigachat, "GigaChat", FakeGigaChat)
     monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://router.huggingface.co/v1")
     monkeypatch.setenv("LLM_API_TIMEOUT", "37")
     monkeypatch.setenv("LLM_FAST_API_TIMEOUT", "13")
-    monkeypatch.setenv("LLM_FAST_MODEL", "GigaChat-2")
-    monkeypatch.delenv("GIGACHAT_CA_BUNDLE_FILE", raising=False)
+    monkeypatch.setenv("LLM_FAST_MODEL", "Qwen/Qwen3.8-27B:deepinfra")
     module = service_importer(CONTENT_SERVICE_ROOT, "app.chains.llm")
+    monkeypatch.setattr(module, "ChatCompletionsClient", FakeChatCompletionsClient)
+    module.LLMClient()
+    client = module.FastLLMClient()
     assert len(constructors) == 1
-    assert constructors[0]["timeout"] == 37
+    assert constructors[0] == {
+        "base_url": "https://router.huggingface.co/v1", "api_key": "test-key", "timeout": 37,
+    }
 
-    result = asyncio.run(module.fast_llm_client.generate_json("Источник", ShortTitle))
+    result = asyncio.run(client.generate_json("Источник", ShortTitle))
 
     assert result.title == "Кратко"
     assert len(constructors) == 2
-    assert constructors[1]["timeout"] == 13
-    assert constructors[1]["max_retries"] == 0
-    assert constructors[1].get("verify_ssl_certs", True) is True
-    context = constructors[1]["ssl_context"]
-    assert context.verify_mode == ssl.CERT_REQUIRED
-    assert context.check_hostname is True
-    trusted = set(context.get_ca_certs(binary_form=True))
-    assert set(ssl.create_default_context().get_ca_certs(binary_form=True)) <= trusted
-    assert any(
-        hashlib.sha256(certificate).hexdigest()
-        == "d26d2d0231b7c39f92cc738512ba54103519e4405d68b5bd703e9788ca8ecf31"
-        for certificate in trusted
-    )
-    assert chats[0].model == "GigaChat-2"
+    assert constructors[1] == {
+        "base_url": "https://router.huggingface.co/v1", "api_key": "test-key", "timeout": 13,
+    }
+    assert chats[0]["model"] == "Qwen/Qwen3.8-27B:deepinfra"
     assert len(chats) == 1
 
 
-def test_explicit_ca_bundle_overrides_bundled_context_for_custom_endpoint(llm, monkeypatch, tmp_path):
+def test_custom_endpoint_uses_chat_transport_configuration(llm, monkeypatch):
     captured = {}
 
-    def sdk(**kwargs):
+    def transport(**kwargs):
         captured.update(kwargs)
         return SimpleNamespace()
 
-    bundle = tmp_path / "custom-trusted-roots.pem"
-    monkeypatch.setenv("GIGACHAT_CA_BUNDLE_FILE", str(bundle))
     monkeypatch.setattr(llm.settings, "llm_base_url", "https://custom.example.test/v1")
-    monkeypatch.setattr(llm, "GigaChat", sdk)
+    monkeypatch.setattr(llm, "ChatCompletionsClient", transport)
 
     assert llm.fast_llm_client.client is not None
-    assert captured["ca_bundle_file"] == str(bundle)
-    assert "ssl_context" not in captured
-    assert captured["verify_ssl_certs"] is True
-    assert captured["base_url"] == "https://custom.example.test/v1"
+    assert captured == {
+        "base_url": "https://custom.example.test/v1", "api_key": "test-key",
+        "timeout": llm.settings.llm_fast_api_timeout,
+    }
 
 
 def test_fast_settings_validate_deadline_and_default_model(llm):
     defaults = llm.settings.__class__(_env_file=None)
-    assert defaults.llm_fast_model == "GigaChat-2-Pro"
-    assert defaults.llm_fast_repair_model == "GigaChat-2-Pro"
-    assert defaults.llm_fast_api_timeout == 120
+    assert defaults.llm_model == "Qwen/Qwen3.8-27B:deepinfra"
+    assert defaults.llm_fast_model == "Qwen/Qwen3.8-27B:deepinfra"
+    assert defaults.llm_fast_repair_model == "Qwen/Qwen3.8-27B:deepinfra"
+    assert defaults.llm_base_url == "https://router.huggingface.co/v1"
+    assert defaults.llm_reasoning_effort == "none"
+    assert defaults.llm_fast_api_timeout == 180
     assert defaults.fast_generation_timeout == 240
     for fields in (
         {"llm_fast_api_timeout": 0},
@@ -121,9 +118,16 @@ def test_fast_settings_validate_deadline_and_default_model(llm):
         {"llm_fast_repair_model": ""},
         {"fast_generation_timeout": 29},
         {"fast_generation_timeout": 271},
+        {"llm_reasoning_effort": "unsupported"},
     ):
         with pytest.raises(ValidationError):
             llm.settings.__class__(_env_file=None, **fields)
+
+
+@pytest.mark.parametrize("effort", ["none", "low", "medium", "xhigh"])
+def test_settings_accept_supported_reasoning_efforts(llm, effort):
+    configured = llm.settings.__class__(_env_file=None, llm_reasoning_effort=effort)
+    assert configured.llm_reasoning_effort == effort
 
 
 def test_raw_object_preserves_valid_fields_for_pipeline_repair(llm, monkeypatch):
@@ -138,6 +142,11 @@ def test_raw_object_preserves_valid_fields_for_pipeline_repair(llm, monkeypatch)
 
     assert asyncio.run(llm.fast_llm_client.generate_json_object("Источник", schema)) == data
     assert len(calls) == 1
+    assert calls[0]["messages"] == [{"role": "user", "content": "Источник"}]
+    assert calls[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "exposlides_response", "schema": schema, "strict": True},
+    }
 
     with pytest.raises(llm.LLMGenerationError) as error:
         asyncio.run(llm.fast_llm_client.generate_json_with_schema("Источник", schema))
@@ -176,8 +185,7 @@ def test_permanent_http_errors_never_retry(llm, monkeypatch, status, caplog):
 
     async def achat(chat):
         calls.append(chat)
-        error = AuthenticationError if status == 401 else ResponseError
-        raise error("https://example.test", status, b"private response body", None)
+        raise http_error(status)
 
     monkeypatch.setattr(llm.fast_llm_client.client, "achat", achat)
     with caplog.at_level(logging.INFO):
@@ -197,8 +205,7 @@ def test_transient_http_errors_retry_twice_and_recover(llm, monkeypatch, status,
     async def achat(chat):
         calls.append(chat)
         if len(calls) <= 2:
-            error = RateLimitError if status == 429 else ServerError
-            raise error("https://example.test/private-url", status, b"private body", None)
+            raise http_error(status)
         return response('{"title":"Кратко"}')
 
     async def sleep(delay):
@@ -214,7 +221,7 @@ def test_transient_http_errors_retry_twice_and_recover(llm, monkeypatch, status,
     assert result == {"title": "Кратко"}
     assert len(calls) == 3
     assert all(chat is calls[0] for chat in calls)
-    assert all(chat.model == "repair-model" for chat in calls)
+    assert all(chat["model"] == "repair-model" for chat in calls)
     assert delays == [1, 2]
     assert f"HTTP {status}" in caplog.text
     assert "private" not in caplog.text
@@ -229,8 +236,7 @@ def test_transient_http_retry_has_fixed_bound_and_redacted_error(
 
     async def achat(chat):
         calls.append(chat)
-        error = RateLimitError if status == 429 else ServerError
-        raise error("https://example.test/private-url", status, b"private body", None)
+        raise http_error(status)
 
     async def sleep(delay):
         delays.append(delay)
@@ -276,7 +282,7 @@ def test_deadline_cancels_retry_backoff_without_another_call(llm, monkeypatch, o
 
     async def achat(chat):
         calls.append(chat)
-        raise RateLimitError("https://example.test", 429, b"private body", None)
+        raise http_error(429)
 
     async def sleep(delay):
         try:
@@ -341,7 +347,7 @@ def test_model_setting_is_read_for_each_request(llm, monkeypatch):
     asyncio.run(llm.fast_llm_client.generate_json_object("Источник", {}))
     monkeypatch.setattr(llm.settings, "llm_fast_model", "second-model")
     asyncio.run(llm.fast_llm_client.generate_json_object("Источник", {}))
-    assert [chat.model for chat in calls] == ["first-model", "second-model"]
+    assert [chat["model"] for chat in calls] == ["first-model", "second-model"]
 
 
 def test_request_model_override_does_not_change_normal_generation_model(llm, monkeypatch):
@@ -358,7 +364,7 @@ def test_request_model_override_does_not_change_normal_generation_model(llm, mon
 
     asyncio.run(run())
 
-    assert [chat.model for chat in calls] == ["repair-model", "default-model", "default-model"]
+    assert [chat["model"] for chat in calls] == ["repair-model", "default-model", "default-model"]
     assert llm.settings.llm_fast_model == "default-model"
 
 

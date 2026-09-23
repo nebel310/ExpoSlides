@@ -106,7 +106,7 @@ def test_final_alternatives_recover_forty_fields_and_preserve_valid_values(
     assert len(calls) == 7  # initial batch, three ordinary repairs, three alternative groups
     for _, schema, model in calls[1:]:
         assert len(schema["required"]) <= 16
-        assert model == "GigaChat-2-Pro"
+        assert model == "Qwen/Qwen3.8-27B:deepinfra"
     for prompt, schema, _ in calls[-3:]:
         assert "SOURCE_SCRIPT" not in prompt
         assert "SLIDE_CONTEXT" not in prompt

@@ -5,7 +5,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-from gigachat.exceptions import AuthenticationError, ForbiddenError, RateLimitError, ServerError
 
 CONTENT_SERVICE_ROOT = Path(__file__).resolve().parents[1] / "services" / "content-service"
 
@@ -13,6 +12,12 @@ CONTENT_SERVICE_ROOT = Path(__file__).resolve().parents[1] / "services" / "conte
 @pytest.fixture
 def errors(service_importer):
     return service_importer(CONTENT_SERVICE_ROOT, "app.errors")
+
+
+def http_error(status):
+    request = httpx.Request("POST", "https://example.test/private")
+    response = httpx.Response(status, request=request, content=b"secret response")
+    return httpx.HTTPStatusError("private response", request=request, response=response)
 
 
 @pytest.mark.parametrize("kind", ["AnalysisValidationError", "PlanValidationError",
@@ -29,10 +34,11 @@ def test_semantic_validation_has_its_own_code(errors, kind):
         (httpx.ReadTimeout("secret source"), "timeout"),
         (httpx.ConnectError("private endpoint"), "network"),
         (ConnectionError("private endpoint"), "network"),
-        (AuthenticationError("private", 401, b"secret", None), "auth"),
-        (ForbiddenError("private", 403, b"secret", None), "auth"),
-        (RateLimitError("private", 429, b"secret", None), "network"),
-        (ServerError("private", 503, b"secret", None), "network"),
+        (http_error(401), "auth"),
+        (http_error(403), "auth"),
+        (http_error(429), "network"),
+        (http_error(500), "network"),
+        (http_error(503), "network"),
     ],
 )
 def test_classification_keeps_root_cause_through_wrappers(errors, cause, expected):
@@ -61,7 +67,33 @@ def test_classification_handles_circular_exception_context(errors):
     assert errors.content_error_code(error) == "unknown"
 
 
-def test_isolated_service_error_code_contract_matches_root_cli(errors):
+def test_credentials_mismatch_is_auth_even_when_a_key_is_configured(errors):
+    cause = errors.LLMCredentialsError("provider credentials mismatch")
+    wrapper = errors.LLMGenerationError("wrapper")
+    wrapper.__cause__ = cause
+
+    assert isinstance(cause, errors.LLMGenerationError)
+    assert errors.content_error_code(cause) == "auth"
+    assert errors.content_error_code(wrapper, credentials_configured=True) == "auth"
+
+
+@pytest.mark.parametrize("status", [400, 404, 422])
+def test_other_http_statuses_remain_unknown(errors, status):
+    error = errors.LLMGenerationError("wrapper")
+    error.__cause__ = http_error(status)
+    assert errors.content_error_code(error) == "unknown"
+
+
+def test_http_classification_preserves_timeout_and_auth_precedence(errors):
+    network = httpx.ConnectError("private")
+    network.__cause__ = http_error(403)
+    assert errors.content_error_code(network) == "auth"
+    network.__cause__.__context__ = httpx.ConnectTimeout("private")
+    assert errors.content_error_code(network) == "timeout"
+
+
+def test_isolated_service_error_code_contract_matches_root_cli(errors, monkeypatch):
+    monkeypatch.syspath_prepend(str(CONTENT_SERVICE_ROOT.parents[1]))
     from exposlides.cli import CONTENT_ERROR_CODES
 
     assert {value: key for key, value in errors.CONTENT_ERROR_EXIT_CODES.items()} == (
@@ -71,7 +103,8 @@ def test_isolated_service_error_code_contract_matches_root_cli(errors):
 
 @pytest.mark.parametrize(
     ("kind", "expected"),
-    [("ContentValidationError", 21), ("TimeoutError", 22), ("LLMGenerationError", 1)],
+    [("ContentValidationError", 21), ("TimeoutError", 22), ("LLMGenerationError", 1),
+     ("LLMCredentialsError", 23)],
 )
 def test_content_cli_exits_with_safe_code_without_output(
     service_importer, monkeypatch, tmp_path, kind, expected,

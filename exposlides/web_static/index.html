@@ -44,6 +44,13 @@
             <p class="field-hint" id="template-hint">Используем макеты и оформление из PPTX.</p>
           </section>
 
+          <section class="library-panel" id="library-panel" aria-labelledby="library-heading" hidden>
+            <div class="section-heading"><h3 id="library-heading">Сохранённые файлы</h3><button class="text-button" id="library-refresh" type="button">Обновить</button></div>
+            <p class="library-status" id="library-status" role="status" hidden></p>
+            <details class="library-group"><summary>Шаблоны</summary><ul class="library-list" id="library-templates"></ul><p class="field-hint" id="library-templates-empty">Загруженные шаблоны появятся здесь.</p></details>
+            <details class="library-group"><summary>Готовые презентации</summary><ul class="library-list" id="library-results"></ul><p class="field-hint" id="library-results-empty">Готовые презентации появятся здесь.</p></details>
+          </section>
+
           <section class="input-section script-section" aria-labelledby="script-label">
             <div class="section-heading"><h3><label id="script-label" for="script">Исходный текст</label></h3><button class="text-button import-button" id="import-button" type="button"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 1.5h4l3 3v10H3v-13h2Zm4 0v3h3M5 8h5M5 11h4" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>Импорт .txt</button><input class="visually-hidden" type="file" id="script-input" accept=".txt,text/plain" tabindex="-1"></div>
             <div class="textarea-wrap"><textarea id="script" name="script" maxlength="100000" placeholder="О чём вы хотите рассказать?&#10;&#10;Вставьте текст доклада или заметки: основные мысли, факты и выводы." aria-describedby="script-hint script-count"></textarea><div class="textarea-footer"><span id="script-source">Текст доклада</span><span id="script-count">0 символов</span></div></div>
@@ -55,6 +62,7 @@
           <div class="message error-message" id="error-message" role="alert" hidden></div>
           <section class="job-panel" id="job-panel" aria-labelledby="job-title" hidden><div class="job-heading"><span class="activity-indicator" id="activity-indicator" aria-hidden="true"></span><h2 id="job-title">Готовим презентацию</h2></div><p id="job-description" aria-live="polite">Читаем структуру шаблона…</p><ol class="job-stages" id="job-stages"><li data-stage="parser">Шаблон</li><li data-stage="content">Текст</li><li data-stage="builder">PPTX</li></ol><a class="download-button" id="download-button" hidden>Скачать презентацию <span aria-hidden="true">↓</span></a></section>
           </div>
+          <section id="parallel-panel" hidden><h3>Ваши запуски</h3><ul class="library-list" id="parallel-jobs"></ul><button type="button" id="new-presentation">Создать ещё одну</button></section>
           <div class="form-actions"><button class="primary-button" id="generate-button" type="submit" disabled><span id="generate-label">Создать презентацию</span><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 10h13m-5-5 5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button><p class="action-hint" id="action-hint">Добавьте шаблон и текст, чтобы начать</p></div>
         </form>
 
@@ -91,7 +99,7 @@
       </div>
     </main>
 
-    <dialog id="help-dialog" aria-labelledby="help-title"><div class="dialog-heading"><p class="eyebrow">EXPOSLIDES</p><button class="icon-button" id="close-help" type="button" aria-label="Закрыть справку">×</button></div><h2 id="help-title">От материалов<br>к готовым слайдам</h2><ol class="help-steps"><li><span>01</span><div><h3>Добавьте свой шаблон</h3><p>Нужен PPTX с текстовыми заполнителями — заголовками и блоками для основного текста. Обычные текстовые поля не заменяются.</p></div></li><li><span>02</span><div><h3>Расскажите главное</h3><p>Вставьте текст или загрузите файл .txt в UTF-8. Включите факты и выводы, которые хотите донести.</p></div></li><li><span>03</span><div><h3>Заберите презентацию</h3><p>Скачайте редактируемый PowerPoint. Проверьте содержание и размещение текста перед выступлением.</p></div></li></ol><div class="help-note">Для сборки нужен настроенный доступ к GigaChat. Исходный текст и текстовая структура шаблона отправляются в GigaChat только после нажатия «Создать презентацию». Просмотр примера работает без генерации.</div><p class="help-storage">Файлы доступны до остановки локального приложения. Скачайте результат перед закрытием сервера.</p><button class="primary-button" id="help-done" type="button">Понятно <span aria-hidden="true">↗</span></button></dialog>
+    <dialog id="help-dialog" aria-labelledby="help-title"><div class="dialog-heading"><p class="eyebrow">EXPOSLIDES</p><button class="icon-button" id="close-help" type="button" aria-label="Закрыть справку">×</button></div><h2 id="help-title">От материалов<br>к готовым слайдам</h2><ol class="help-steps"><li><span>01</span><div><h3>Добавьте свой шаблон</h3><p>Нужен PPTX с текстовыми заполнителями — заголовками и блоками для основного текста. Обычные текстовые поля не заменяются.</p></div></li><li><span>02</span><div><h3>Расскажите главное</h3><p>Вставьте текст или загрузите файл .txt в UTF-8. Включите факты и выводы, которые хотите донести.</p></div></li><li><span>03</span><div><h3>Заберите презентацию</h3><p>Скачайте редактируемый PowerPoint. Проверьте содержание и размещение текста перед выступлением.</p></div></li></ol><div class="help-note">Для сборки нужен настроенный доступ к Qwen. Исходный текст и текстовая структура шаблона отправляются через Hugging Face провайдеру DeepInfra только после нажатия «Создать презентацию». Просмотр примера работает без генерации.</div><p class="help-storage" id="help-storage">Файлы доступны до остановки локального приложения. Скачайте результат перед закрытием сервера.</p><button class="primary-button" id="help-done" type="button">Понятно <span aria-hidden="true">↗</span></button></dialog>
     <div class="toast" id="toast" role="status" hidden></div>
   </body>
 </html>

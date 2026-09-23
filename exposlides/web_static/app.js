@@ -14,6 +14,103 @@ let resultPollTimer;
 let resultRevision = 0;
 let thumbnailRevision = "";
 const failedPreviewImages = new Set();
+const library = { persistent: null, templates: [], jobs: [], loading: false, error: null };
+let libraryRevision = 0;
+let selectionRevision = 0;
+const libraryButtons = [];
+
+function updateLibraryControls() {
+  $("library-refresh").disabled = library.loading;
+  $("library-panel").setAttribute("aria-busy", String(library.loading));
+  for (const { button, kind, id } of libraryButtons) {
+    button.disabled = state.busy || state.uploading;
+    const selected = kind === "template" ? state.template?.id === id && !state.job
+      : state.job?.id === id;
+    button.setAttribute("aria-pressed", String(selected));
+  }
+}
+
+function openSavedResult(job) {
+  if (state.busy || state.uploading) return;
+  selectionRevision++;
+  clearError();
+  clearTimeout(pollTimer);
+  sessionStorage.setItem("exposlides-job", job.id);
+  renderJob(job);
+  setWorkspaceView("preview");
+}
+
+function renderLibrary() {
+  $("library-panel").hidden = library.persistent !== true;
+  $("library-status").textContent = library.error || (library.loading ? "Обновляем список…" : "");
+  $("library-status").hidden = !library.error && !library.loading;
+  if (library.persistent !== null) {
+    $("help-storage").textContent = library.persistent
+      ? "Шаблоны и готовые презентации сохраняются в хранилище и доступны в разделе «Сохранённые файлы» после перезапуска приложения."
+      : "Файлы доступны до остановки локального приложения. Скачайте результат перед закрытием сервера.";
+  }
+  libraryButtons.length = 0;
+  for (const [kind, items, listId, emptyText] of [
+    ["template", library.templates, "library-templates", "Загруженные шаблоны появятся здесь."],
+    ["job", library.jobs, "library-results", "Готовые презентации появятся здесь."],
+  ]) {
+    $(listId).replaceChildren(...items.map((item) => {
+      const row = document.createElement("li");
+      row.className = "library-item";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "library-open";
+      const title = document.createElement("strong");
+      title.textContent = item.name || "Презентация";
+      const description = document.createElement("span");
+      description.textContent = `${item.slide_count} ${plural(item.slide_count, ["слайд", "слайда", "слайдов"])} · ${kind === "template" ? "Выбрать шаблон" : "Открыть результат"}`;
+      button.append(title, description);
+      button.addEventListener("click", () => {
+        if (state.busy || state.uploading) return;
+        if (kind === "template") {
+          clearError();
+          applyTemplate(item);
+          if (item.preview?.status !== "pending") pollTemplatePreview(item.id);
+        } else openSavedResult(item);
+      });
+      libraryButtons.push({ button, kind, id: item.id });
+      row.append(button);
+      if (kind === "job") {
+        const download = document.createElement("a");
+        download.className = "library-download";
+        download.href = `/api/jobs/${encodeURIComponent(item.id)}/download`;
+        download.setAttribute("download", "presentation.pptx");
+        download.setAttribute("aria-label", `Скачать ${item.name || "презентацию"}`);
+        download.textContent = "↓";
+        row.append(download);
+      }
+      return row;
+    }));
+    const empty = $(`${listId}-empty`);
+    empty.textContent = emptyText;
+    empty.hidden = items.length > 0;
+  }
+  updateLibraryControls();
+}
+
+async function refreshLibrary() {
+  const revision = ++libraryRevision;
+  library.loading = true;
+  library.error = null;
+  renderLibrary();
+  try {
+    const saved = await request("/api/library");
+    if (revision !== libraryRevision) return;
+    library.persistent = saved.persistent === true;
+    library.templates = saved.templates || [];
+    library.jobs = saved.jobs || [];
+  } catch {
+    if (revision !== libraryRevision) return;
+    library.error = "Не удалось обновить сохранённые файлы. Попробуйте ещё раз.";
+  } finally {
+    if (revision === libraryRevision) { library.loading = false; renderLibrary(); }
+  }
+}
 
 function previewPresentation() {
   return state.job?.status === "completed" ? state.result : state.template;
@@ -138,6 +235,7 @@ async function request(path, body) {
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller.signal,
     });
+    if (response.status === 403) state.token = null;
     const data = await response.json();
     if (!response.ok) {
       const error = new Error(data.error || "Не удалось выполнить запрос. Попробуйте ещё раз.");
@@ -146,14 +244,14 @@ async function request(path, body) {
     }
     return data;
   } catch (error) {
-    if (error.name === "AbortError") throw new Error("Приложение долго не отвечает. Проверьте, что локальный сервер запущен.");
-    if (error instanceof TypeError) throw new Error("Нет связи с приложением. Проверьте, что локальный сервер запущен.");
+    if (error.name === "AbortError") throw new Error("Сервер долго не отвечает. Проверьте подключение к интернету и попробуйте ещё раз.");
+    if (error instanceof TypeError) throw new Error("Не удалось связаться с сервером. Проверьте подключение к интернету и попробуйте ещё раз.");
     throw error;
   } finally { clearTimeout(timeout); }
 }
 
-async function ensureSession() {
-  if (!state.token) state.token = (await request("/api/session")).token;
+async function ensureSession({ refresh = false } = {}) {
+  if (refresh || !state.token) state.token = (await request("/api/session")).token;
 }
 
 function setWorkflow(step) {
@@ -174,9 +272,10 @@ function updateControls() {
   script.readOnly = locked;
   form.setAttribute("aria-busy", String(locked));
   $("generate-label").textContent = state.busy ? "Создаём презентацию…" : state.job?.status === "failed" ? "Попробовать снова" : state.job?.status === "completed" ? "Создать ещё раз" : "Создать презентацию";
-  $("action-hint").textContent = state.busy ? "Можно просматривать шаблон, пока идёт сборка" : state.uploading ? "Читаем файл шаблона…" : ready ? "Текст и структура шаблона будут отправлены в GigaChat" : !state.template && !script.value.trim() ? "Добавьте шаблон и текст, чтобы начать" : !state.template ? "Добавьте шаблон презентации" : "Добавьте текст для слайдов";
+  $("action-hint").textContent = state.busy ? "Можно просматривать шаблон, пока идёт сборка" : state.uploading ? "Читаем файл шаблона…" : ready ? "Текст и структура шаблона будут отправлены модели Qwen" : !state.template && !script.value.trim() ? "Добавьте шаблон и текст, чтобы начать" : !state.template ? "Добавьте шаблон презентации" : "Добавьте текст для слайдов";
   const count = script.value.length;
   $("script-count").textContent = `${count.toLocaleString("ru-RU")} ${plural(count, ["символ", "символа", "символов"])}`;
+  updateLibraryControls();
   renderActivity();
 }
 
@@ -245,6 +344,7 @@ async function pollResultPreview(jobId, revision, failures = 0) {
 }
 
 function applyTemplate(template) {
+  selectionRevision++;
   clearTimeout(previewPollTimer);
   previewRevision++;
   failedPreviewImages.clear();
@@ -402,18 +502,20 @@ async function uploadTemplate(file) {
   if (file.size > 25 * 1024 * 1024) { showError("Шаблон слишком большой. Максимальный размер — 25 МБ."); return; }
   if (!file.size) { showError("Этот файл пуст. Выберите другой шаблон."); return; }
   state.uploading = true;
+  selectionRevision++;
   beginActivity();
   $("upload-title").textContent = "Читаем ваш шаблон…";
   updateControls();
   try {
-    await ensureSession();
     const data = await new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result.split(",")[1]);
       reader.onerror = () => reject(new Error("Не удалось прочитать файл. Выберите его ещё раз."));
       reader.readAsDataURL(file);
     });
+    await ensureSession({ refresh: true });
     applyTemplate(await request("/api/templates", { name: file.name, data }));
+    refreshLibrary();
     notify("Шаблон загружен");
   } catch (error) { setWorkspaceView("materials"); showError(error.message); }
   finally {
@@ -428,6 +530,7 @@ async function loadExample() {
   if (state.busy || state.uploading) return;
   if ((state.template || script.value.trim()) && !confirm("Заменить текущий шаблон и текст встроенным примером?")) return;
   state.uploading = true;
+  selectionRevision++;
   beginActivity();
   clearError();
   updateControls();
@@ -436,12 +539,67 @@ async function loadExample() {
     applyTemplate(example);
     script.value = example.script;
     $("script-source").textContent = "Пример · квартальный обзор";
+    refreshLibrary();
     notify("Пример открыт. Текст можно изменить.");
   } catch (error) { setWorkspaceView("materials"); showError(error.message); }
   finally { state.uploading = false; updateControls(); }
 }
 
+const sessionJobs = new Map();
+const backgroundTimers = new Map();
+
+function rememberJob(job) {
+  sessionJobs.set(job.id, job);
+  sessionStorage.setItem("exposlides-jobs", JSON.stringify([...sessionJobs.keys()]));
+  $("parallel-panel").hidden = false;
+  $("parallel-jobs").replaceChildren();
+  for (const item of sessionJobs.values()) {
+    const row = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    const label = item.status === "completed" ? "Готово" : item.status === "failed" ? "Ошибка" : "Создаётся";
+    button.textContent = `Презентация ${[...sessionJobs.keys()].indexOf(item.id) + 1} · ${label}`;
+    button.addEventListener("click", () => {
+      if (state.uploading || (state.busy && !state.job)) return;
+      const previous = state.job;
+      selectionRevision++;
+      clearTimeout(pollTimer);
+      if (previous && previous.id !== item.id) watchBackgroundJob(previous.id);
+      sessionStorage.setItem("exposlides-job", item.id);
+      renderJob(item);
+      if (state.busy) pollJob(item.id);
+    });
+    row.append(button);
+    $("parallel-jobs").append(row);
+  }
+}
+
+async function watchBackgroundJob(id) {
+  clearTimeout(backgroundTimers.get(id));
+  try {
+    const job = await request(`/api/jobs/${encodeURIComponent(id)}`);
+    rememberJob(job);
+    if (job.status !== "running" && job.status !== "queued") return;
+  } catch (error) {
+    if (error.status >= 400 && error.status < 500) return;
+  }
+  backgroundTimers.set(id, setTimeout(() => watchBackgroundJob(id), 2000));
+}
+
+$("new-presentation").addEventListener("click", () => {
+  if (state.uploading || (state.busy && !state.job)) return;
+  const previous = state.job;
+  selectionRevision++;
+  clearTimeout(pollTimer);
+  state.busy = false;
+  clearFinishedJob();
+  setWorkspaceView("materials");
+  updateControls();
+  if (previous) watchBackgroundJob(previous.id);
+});
+
 function renderJob(job) {
+  rememberJob(job);
   const changed = state.job?.id !== job.id || state.job?.stage !== job.stage || state.job?.status !== job.status;
   state.job = job;
   state.busy = job.status === "running" || job.status === "queued";
@@ -464,6 +622,7 @@ function renderJob(job) {
       renderPreview();
       setWorkspaceView("preview");
       loadResultPresentation(job.id);
+      refreshLibrary();
     }
   } else if (job.status === "failed") {
     setWorkflow(0);
@@ -490,12 +649,14 @@ function renderJob(job) {
 async function pollJob(id) {
   try {
     const job = await request(`/api/jobs/${encodeURIComponent(id)}`);
+    if (state.job?.id !== id) return;
     activity.connectionLost = false;
     clearError();
     renderJob(job);
     if (state.busy) pollTimer = setTimeout(() => pollJob(id), 1600);
     else if (job.status === "completed") notify("Готово. Презентацию можно скачать.");
   } catch (error) {
+    if (state.job?.id !== id) return;
     if (error.status >= 400 && error.status < 500) {
       state.busy = false;
       state.job = null;
@@ -524,6 +685,7 @@ form.addEventListener("submit", async (event) => {
   if (!state.template) { showError("Сначала добавьте PPTX-шаблон.", true); $("dropzone").focus(); return; }
   if (!script.value.trim()) { showError("Добавьте текст для презентации.", true); script.focus(); return; }
   clearFinishedJob();
+  selectionRevision++;
   state.busy = true;
   beginActivity({ showPreview: true });
   updateControls();
@@ -555,6 +717,7 @@ document.addEventListener("dragover", (event) => { if (event.dataTransfer.types.
 document.addEventListener("drop", (event) => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); });
 function removeTemplate() {
   if (state.busy) return;
+  selectionRevision++;
   clearTimeout(previewPollTimer);
   previewRevision++;
   clearError(); clearFinishedJob(); state.template = null;
@@ -564,6 +727,7 @@ function removeTemplate() {
   renderPreview(); updateControls(); $("dropzone").focus();
 }
 $("remove-template").addEventListener("click", removeTemplate);
+$("library-refresh").addEventListener("click", refreshLibrary);
 $("example-button").addEventListener("click", loadExample);
 script.addEventListener("input", () => { clearFinishedJob(); clearError(); $("script-source").textContent = "Исходный текст"; updateControls(); });
 $("max-slides").addEventListener("change", () => { clearFinishedJob(); updateControls(); });
@@ -605,16 +769,23 @@ new ResizeObserver(fitSlide).observe(document.querySelector(".canvas-stage"));
 
 async function initialize() {
   updateControls();
+  refreshLibrary();
+  const revision = selectionRevision;
   try {
     await ensureSession();
+    if (revision !== selectionRevision) return;
+    let savedJobs = [];
+    try { savedJobs = JSON.parse(sessionStorage.getItem("exposlides-jobs") || "[]"); } catch {}
+    if (Array.isArray(savedJobs)) savedJobs.filter(id => typeof id === "string").forEach(watchBackgroundJob);
     const savedJob = sessionStorage.getItem("exposlides-job");
     if (savedJob) {
       try {
         const job = await request(`/api/jobs/${encodeURIComponent(savedJob)}`);
+        if (revision !== selectionRevision) return;
         if (job.status === "running" || job.status === "queued") beginActivity({ showPreview: true });
         renderJob(job);
         if (state.busy) pollJob(savedJob);
-      } catch { sessionStorage.removeItem("exposlides-job"); }
+      } catch { if (revision === selectionRevision) sessionStorage.removeItem("exposlides-job"); }
     }
   } catch (error) { showError(error.message); }
 }

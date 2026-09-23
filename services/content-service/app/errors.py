@@ -1,7 +1,6 @@
 import ssl
 
 import httpx
-from gigachat.exceptions import AuthenticationError, ForbiddenError, RateLimitError, ServerError
 from pydantic import ValidationError
 
 # Файловые сервисы изолированы; эти коды также принимает exposlides.cli.
@@ -20,6 +19,10 @@ class GenerationPipelineError(RuntimeError):
 
 class LLMGenerationError(GenerationPipelineError):
     """The LLM request or its structured response could not be recovered."""
+
+
+class LLMCredentialsError(LLMGenerationError):
+    """The configured credentials do not match the requested LLM provider."""
 
 
 class AnalysisValidationError(GenerationPipelineError):
@@ -50,13 +53,18 @@ def content_error_code(error: BaseException, *, credentials_configured: bool = T
 
     if any(isinstance(item, (TimeoutError, httpx.TimeoutException)) for item in chain):
         return "timeout"
-    if any(isinstance(item, (AuthenticationError, ForbiddenError)) for item in chain):
+    if any(
+        isinstance(item, LLMCredentialsError)
+        or isinstance(item, httpx.HTTPStatusError) and item.response.status_code in {401, 403}
+        for item in chain
+    ):
         return "auth"
     if not credentials_configured and any(isinstance(item, LLMGenerationError) for item in chain):
         return "auth"
     if any(
-        isinstance(item, (httpx.TransportError, ConnectionError, ssl.SSLError, RateLimitError,
-                          ServerError))
+        isinstance(item, (httpx.TransportError, ConnectionError, ssl.SSLError))
+        or isinstance(item, httpx.HTTPStatusError)
+        and (item.response.status_code == 429 or 500 <= item.response.status_code < 600)
         for item in chain
     ):
         return "network"

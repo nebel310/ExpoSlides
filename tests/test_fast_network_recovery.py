@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from gigachat.exceptions import AuthenticationError
 
 CONTENT_SERVICE_ROOT = Path(__file__).resolve().parents[1] / "services" / "content-service"
 
@@ -100,7 +99,11 @@ def test_wrapped_tls_or_authentication_errors_never_retry(
     elif cause_kind == "ssl_message":
         transport_error = httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] private details")
     elif cause_kind == "auth":
-        transport_error.__cause__ = AuthenticationError("private", 401, b"private", None)
+        request = httpx.Request("POST", "https://example.test/private")
+        transport_error.__cause__ = httpx.HTTPStatusError(
+            "private", request=request,
+            response=httpx.Response(401, request=request, content=b"private"),
+        )
     else:
         transport_error.__cause__ = certificate_error
         certificate_error.__context__ = transport_error

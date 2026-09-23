@@ -5,6 +5,7 @@ import http.client
 import importlib
 import io
 import json
+import socket
 import sys
 import threading
 import zipfile
@@ -297,6 +298,51 @@ def test_session_token_origin_and_host_are_guarded(server):
     assert request(server, "GET", "/api/session", headers={"Origin": "null"})[0] == 403
 
 
+def test_stale_session_upload_finishes_sending_before_receiving_forbidden(server):
+    """Старая вкладка получает JSON-ошибку, а не обрыв передачи большого файла."""
+    client, peer = socket.socketpair()
+    client.settimeout(3)
+    client.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 8192)
+    body = json.dumps({"name": "large.pptx", "data": "A" * (1024 * 1024)}).encode()
+    headers = (
+        "POST /api/templates HTTP/1.1\r\n"
+        "Host: 127.0.0.1:8765\r\n"
+        "Content-Type: application/json\r\n"
+        "X-ExpoSlides-Token: expired-session\r\n"
+        f"Content-Length: {len(body)}\r\n\r\n"
+    ).encode()
+
+    def handle_request():
+        with peer:
+            web.WebHandler(peer, ("127.0.0.1", 12345), server)
+
+    worker = threading.Thread(target=handle_request, daemon=True)
+    worker.start()
+    try:
+        client.sendall(headers)
+        client.sendall(body)
+        response = http.client.HTTPResponse(client)
+        response.begin()
+        assert response.status == 403
+        assert "Сессия устарела" in json.loads(response.read())["error"]
+        assert not server.workspace.templates
+    finally:
+        client.close()
+        worker.join(timeout=3)
+    assert not worker.is_alive()
+
+
+def test_foreign_origin_is_rejected_before_reading_upload(server, monkeypatch):
+    def unexpected_body_read(self):
+        pytest.fail("Тело запроса с постороннего сайта не должно читаться")
+
+    monkeypatch.setattr(web.WebHandler, "_body", unexpected_body_read)
+    status, _, _ = request(
+        server, "POST", "/api/templates", {}, headers={"Origin": "https://example.org"}
+    )
+    assert status == 403
+
+
 def test_static_routes_are_explicit_and_cannot_expose_local_files(server, monkeypatch, tmp_path):
     (tmp_path / "index.html").write_text("<h1>ExpoSlides</h1>", encoding="utf-8")
     (tmp_path / "private.txt").write_text("private", encoding="utf-8")
@@ -363,7 +409,7 @@ def test_shutdown_kills_descendants_even_if_parent_exited(workspace, monkeypatch
     job.process = None
 
 
-def test_only_one_job_can_run_and_unfinished_result_cannot_download(server, monkeypatch):
+def test_parallel_jobs_have_separate_files_and_unfinished_result_cannot_download(server, monkeypatch):
     monkeypatch.setattr(web.Workspace, "_run_job", lambda *args: None)
     metadata = server.workspace.example()
     payload = {"template_id": metadata["id"], "script": "Текст"}
@@ -371,7 +417,18 @@ def test_only_one_job_can_run_and_unfinished_result_cannot_download(server, monk
     status, body, _ = request(server, "POST", "/api/jobs", payload)
     job_id = json.loads(body)["id"]
     assert status == 202
-    assert request(server, "POST", "/api/jobs", payload)[0] == 409
+    second_status, second_body, _ = request(
+        server, "POST", "/api/jobs", {**payload, "script": "Вторая презентация"},
+    )
+    second_id = json.loads(second_body)["id"]
+    assert second_status == 202
+    assert second_id != job_id
+    first = server.workspace.get_job(job_id)
+    second = server.workspace.get_job(second_id)
+    assert first.status == second.status == "running"
+    assert first.directory != second.directory
+    assert (first.directory / "script.txt").read_text(encoding="utf-8") == "Текст"
+    assert (second.directory / "script.txt").read_text(encoding="utf-8") == "Вторая презентация"
     assert request(server, "GET", f"/api/jobs/{job_id}/download")[0] == 409
     assert request(server, "GET", "/api/jobs/missing/download")[0] == 404
 
@@ -848,6 +905,18 @@ def test_fast_progress_requires_exact_message_and_logger(tmp_path):
         *[
             (
                 "slides", "app.chains.llm", "WARNING",
+                f"Временная ошибка LLM HTTP {status}, повтор 1/2 через 1 с",
+            ) for status in (429, 500, 502, 503, 504)
+        ],
+        *[
+            (
+                "slides", "app.chains.llm", "WARNING",
+                f"Временная ошибка OpenRouter HTTP {status}, повтор 1/2 через 1 с",
+            ) for status in (429, 500, 502, 503, 504)
+        ],
+        *[
+            (
+                "slides", "app.chains.llm", "WARNING",
                 f"Временная ошибка GigaChat HTTP {status}, повтор 1/2 через 1 с",
             ) for status in (500, 502, 503, 504)
         ],
@@ -908,6 +977,14 @@ def test_unrelated_or_injected_lines_do_not_change_public_progress(tmp_path):
             logger="app.chains.llm", level="WARNING",
         ),
         content_log(
+            "Временная ошибка LLM HTTP 401, повтор 1/2 через 1 с",
+            logger="app.chains.llm", level="WARNING",
+        ),
+        content_log(
+            "Временная ошибка OpenRouter HTTP 401, повтор 1/2 через 1 с",
+            logger="app.chains.llm", level="WARNING",
+        ),
+        content_log(
             "Временная ошибка GigaChat HTTP 429, повтор 1/2 через 1 с",
             logger="app.chains.llm", level="WARNING",
         ),
@@ -925,7 +1002,7 @@ def test_unrelated_or_injected_lines_do_not_change_public_progress(tmp_path):
 def test_retry_does_not_invent_a_phase_before_known_marker(tmp_path):
     job = web.Job("job", tmp_path, "template", None, stage="content")
     job.observe_output(content_log(
-        "Временная ошибка GigaChat HTTP 503, повтор 1/2 через 1 с",
+        "Временная ошибка LLM HTTP 503, повтор 1/2 через 1 с",
         logger="app.chains.llm", level="WARNING",
     ))
     assert "progress" not in job.public()

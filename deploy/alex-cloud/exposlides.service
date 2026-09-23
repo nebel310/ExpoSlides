@@ -1,0 +1,27 @@
+[Unit]
+Description=ExpoSlides web interface
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=alex
+Group=alex
+WorkingDirectory=/home/alex/exposlides/current
+ExecStart=/usr/bin/env LOG_LEVEL=INFO /home/alex/exposlides/current/.venv/bin/python -m exposlides.web --port 8765
+Environment=PYTHONUNBUFFERED=1
+Environment=LOG_LEVEL=INFO
+Environment=EXPOSLIDES_FILE_SERVICE=127.0.0.1:50051
+Environment=EXPOSLIDES_DATA_DIR=/home/alex/exposlides/shared/library
+EnvironmentFile=-/home/alex/exposlides/shared/content.env
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+KillMode=mixed
+TimeoutStopSec=30
+UMask=0077
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

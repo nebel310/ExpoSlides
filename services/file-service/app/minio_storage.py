@@ -1,6 +1,4 @@
-import io
-import uuid
-from pathlib import Path
+from urllib.parse import quote, unquote
 
 from aiobotocore.session import get_session
 
@@ -35,8 +33,19 @@ class MinioStorage:
             await client.__aexit__(None, None, None)
 
     @classmethod
-    async def save_file(cls, file_content: bytes, object_name: str, content_type: str, metadata: dict | None = None) -> None:
+    async def save_file(
+        cls,
+        file_content: bytes,
+        object_name: str,
+        content_type: str,
+        metadata: dict[str, str] | None = None,
+    ) -> None:
         """Сохранить файл в MinIO"""
+        encoded_metadata = dict(metadata or {})
+        if "original_name" in encoded_metadata:
+            # S3 metadata передаётся HTTP-заголовками и допускает только ASCII.
+            encoded_metadata["original_name"] = quote(encoded_metadata["original_name"], safe="")
+            encoded_metadata["original_name_encoding"] = "url"
         client = await cls._get_client()
         try:
             await client.put_object(
@@ -44,7 +53,7 @@ class MinioStorage:
                 Key=object_name,
                 Body=file_content,
                 ContentType=content_type,
-                Metadata=metadata or {},
+                Metadata=encoded_metadata,
             )
         finally:
             await client.__aexit__(None, None, None)
@@ -60,6 +69,8 @@ class MinioStorage:
             content_type = response.get("ContentType", "application/octet-stream")
             metadata = response.get("Metadata", {})
             original_name = metadata.get("original_name", object_name)
+            if metadata.get("original_name_encoding") == "url":
+                original_name = unquote(original_name)
             return data, content_type, original_name
         except Exception:
             return None

@@ -114,7 +114,7 @@ def test_many_overflows_use_small_parallel_repairs_and_preserve_valid_fields(
     assert len(client.calls[0][1]["required"]) == 100
     repair_calls = client.calls[1:]
     assert len(repair_calls) == 4
-    assert client.models == [None] + ["GigaChat-2-Pro"] * 4
+    assert client.models == [None] + ["Qwen/Qwen3.8-27B:deepinfra"] * 4
     assert client.peak_active == 1
     requested_aliases = [alias for _, schema in repair_calls for alias in schema["required"]]
     assert len(requested_aliases) == len(set(requested_aliases)) == 55
@@ -301,7 +301,7 @@ def test_mixed_length_and_fact_errors_use_bounded_grouped_repairs(
     assert client.peak_active == 1
     # Все группы вариантов проверяются; массовый отказ не запускает micro-retry.
     assert len(client.calls) == (9 if retain_unsupported_fact else 5)
-    assert client.models == [None] + ["GigaChat-2-Pro"] * (len(client.calls) - 1)
+    assert client.models == [None] + ["Qwen/Qwen3.8-27B:deepinfra"] * (len(client.calls) - 1)
     requested = [alias for _, schema in repair_calls for alias in schema["required"]]
     assert len(requested) == len(set(requested)) == 57
     assert set(requested) == {f"field_{index:04d}" for index in range(56)} | {"field_0080"}
