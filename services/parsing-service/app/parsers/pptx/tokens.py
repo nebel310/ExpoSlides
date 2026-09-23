@@ -217,13 +217,26 @@ def element_signature(element: SlideElement) -> str | None:
     """Строит сигнатуру элемента для поиска повторов"""
     if element.type not in (ElementType.SHAPE, ElementType.IMAGE, ElementType.CONNECTOR):
         return None
+
+    shape_type = ""
+    if element.geometry is not None and element.geometry.shape_type:
+        shape_type = element.geometry.shape_type
+
+    color_hex = ""
+    if element.fill is not None and element.fill.color_hex:
+        color_hex = element.fill.color_hex
+
+    asset_id = ""
+    if element.image is not None and element.image.asset_id:
+        asset_id = element.image.asset_id
+
     parts = [
         element.type.value,
         str(element.bbox.width),
         str(element.bbox.height),
-        element.geometry.shape_type if element.geometry else "",
-        element.fill.color_hex if element.fill else "",
-        element.image.asset_id if element.image else "",
+        shape_type,
+        color_hex,
+        asset_id,
     ]
     return "|".join(parts)
 

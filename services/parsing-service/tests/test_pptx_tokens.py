@@ -6,6 +6,7 @@ import pytest
 from pptx import Presentation as PPTXPresentation
 from pptx.util import Emu, Pt
 
+from app.models.presentation import Fill, FillType
 from app.models.presentation import (
     BBox,
     ElementType,
@@ -446,3 +447,19 @@ def test_collect_all_fonts_ignores_empty() -> None:
         ),
     )
     assert tokens_module.collect_all_fonts([Slide(index=1, elements=[elem])]) == []
+
+
+def test_element_signature_shape_without_fill_color() -> None:
+    """Фигура с заливкой без цвета не должна ронять построение сигнатуры"""
+
+    elem = SlideElement(
+        id="e1",
+        type=ElementType.SHAPE,
+        bbox=BBox(left=0, top=0, width=100, height=100),
+        fill=Fill(type=FillType.NONE),
+    )
+
+    sig = tokens_module.element_signature(elem)
+
+    assert sig is not None
+    assert "shape" in sig
