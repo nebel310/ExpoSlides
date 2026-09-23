@@ -155,6 +155,29 @@ h1, h2, h3, p { margin: 0; }
 .section-heading h3 { font-size: 13px; font-weight: 600; }
 .field-format { color: #737b89; font-size: 10px; font-weight: 550; letter-spacing: .4px; }
 
+/* Presentations in this session */
+.parallel-panel { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
+.parallel-panel .section-heading { margin-bottom: 12px; }
+.run-count { display: grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 7px; background: var(--subtle); color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.run-list { display: grid; gap: 8px; list-style: none; margin: 0; padding: 3px; max-height: 220px; overflow-y: auto; scrollbar-width: thin; }
+.run-card { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 66px; padding: 12px; text-align: left; border: 1px solid var(--line); border-radius: 10px; background: #fff; transition: border-color .15s, background .15s; }
+.run-card:hover:not(:disabled) { border-color: #b7c4fa; background: #f8faff; }
+.run-card[aria-pressed="true"] { border-color: #bcc9ff; background: #f4f6ff; }
+.run-symbol { position: relative; display: grid; place-items: center; flex: 0 0 32px; height: 36px; border: 1px solid #dfe4ef; border-radius: 6px; background: #fff; color: #788399; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.run-copy { display: grid; gap: 5px; flex: 1; min-width: 0; }
+.run-title { font-size: 12px; font-weight: 550; line-height: 1.4; overflow-wrap: anywhere; }
+.run-status { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.run-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+.run-card[data-status="running"] .run-status, .run-card[data-status="queued"] .run-status { color: var(--accent); }
+.run-card[data-status="completed"] .run-status { color: var(--success); }
+.run-card[data-status="failed"] .run-status { color: #b44250; }
+.run-arrow { color: #a3aaba; font-size: 18px; }
+.run-card[aria-pressed="true"] .run-arrow { color: var(--accent); }
+.new-presentation-button { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 44px; margin-top: 12px; padding: 10px 14px; border: 1px solid #d9e1ff; border-radius: 8px; background: #f3f6ff; color: #3555ce; font-size: 12px; font-weight: 550; transition: background .15s, border-color .15s; }
+.new-presentation-button svg { width: 18px; height: 18px; }
+.new-presentation-button:hover:not(:disabled) { background: #e9eeff; border-color: #b7c4fa; }
+.new-presentation-button:active:not(:disabled) { background: #dfe7ff; }
+
 /* Saved materials */
 .library-panel { margin: 20px 0 24px; padding: 16px 0; border-block: 1px solid var(--line); }
 .library-panel .section-heading { margin-bottom: 4px; }

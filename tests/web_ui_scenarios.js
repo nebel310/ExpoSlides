@@ -244,6 +244,13 @@ const scenarios = {
     assert.equal(app.evaluate("state.job.id"), "second");
     assert.equal(app.evaluate("state.busy"), true);
     assert.equal(app.element("parallel-jobs").children.length, 2);
+    const [firstCard, secondCard] = app.element("parallel-jobs").children.map(row => row.children[0]);
+    assert.equal(firstCard.getAttribute("aria-pressed"), "false");
+    assert.equal(secondCard.getAttribute("aria-pressed"), "true");
+    assert.equal(firstCard.dataset.status, "completed");
+    assert.equal(secondCard.dataset.status, "running");
+    assert.equal(app.element("parallel-count").textContent, "2");
+    assert.equal(app.element("new-presentation").disabled, false);
     assert.match(app.element("parallel-jobs").textContent, /Готово/);
     const submitted = app.calls.find(call => call.url === "/api/jobs");
     assert.equal(JSON.parse(submitted.options.body).script, "Второй текст");

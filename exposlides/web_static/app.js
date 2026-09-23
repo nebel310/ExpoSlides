@@ -276,6 +276,7 @@ function updateControls() {
   const count = script.value.length;
   $("script-count").textContent = `${count.toLocaleString("ru-RU")} ${plural(count, ["символ", "символа", "символов"])}`;
   updateLibraryControls();
+  renderSessionJobs();
   renderActivity();
 }
 
@@ -551,14 +552,42 @@ const backgroundTimers = new Map();
 function rememberJob(job) {
   sessionJobs.set(job.id, job);
   sessionStorage.setItem("exposlides-jobs", JSON.stringify([...sessionJobs.keys()]));
-  $("parallel-panel").hidden = false;
+  renderSessionJobs();
+}
+
+function renderSessionJobs() {
+  $("parallel-panel").hidden = sessionJobs.size === 0;
+  $("parallel-count").textContent = String(sessionJobs.size);
+  $("new-presentation").disabled = state.uploading || (state.busy && !state.job);
   $("parallel-jobs").replaceChildren();
   for (const item of sessionJobs.values()) {
     const row = document.createElement("li");
     const button = document.createElement("button");
     button.type = "button";
-    const label = item.status === "completed" ? "Готово" : item.status === "failed" ? "Ошибка" : "Создаётся";
-    button.textContent = `Презентация ${[...sessionJobs.keys()].indexOf(item.id) + 1} · ${label}`;
+    button.className = "run-card";
+    button.dataset.status = item.status;
+    button.setAttribute("aria-pressed", String(state.job?.id === item.id));
+    button.disabled = state.uploading || (state.busy && !state.job);
+    const number = [...sessionJobs.keys()].indexOf(item.id) + 1;
+    const label = item.status === "completed" ? "Готово к скачиванию" : item.status === "failed" ? "Не удалось создать" : "Создаётся";
+    const icon = document.createElement("span");
+    icon.className = "run-symbol";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = String(number).padStart(2, "0");
+    const copy = document.createElement("span");
+    copy.className = "run-copy";
+    const title = document.createElement("span");
+    title.className = "run-title";
+    title.textContent = `Презентация ${number}`;
+    const status = document.createElement("span");
+    status.className = "run-status";
+    status.textContent = label;
+    copy.append(title, status);
+    const arrow = document.createElement("span");
+    arrow.className = "run-arrow";
+    arrow.setAttribute("aria-hidden", "true");
+    arrow.textContent = "›";
+    button.append(icon, copy, arrow);
     button.addEventListener("click", () => {
       if (state.uploading || (state.busy && !state.job)) return;
       const previous = state.job;
@@ -599,9 +628,9 @@ $("new-presentation").addEventListener("click", () => {
 });
 
 function renderJob(job) {
-  rememberJob(job);
   const changed = state.job?.id !== job.id || state.job?.stage !== job.stage || state.job?.status !== job.status;
   state.job = job;
+  rememberJob(job);
   state.busy = job.status === "running" || job.status === "queued";
   $("job-panel").hidden = false;
   $("job-panel").classList.toggle("is-failed", job.status === "failed");
