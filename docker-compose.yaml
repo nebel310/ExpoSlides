@@ -34,6 +34,17 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: gateway-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   file-service:
     build:
       context: .
@@ -141,6 +152,35 @@ services:
         condition: service_healthy
       file-service:
         condition: service_started
+
+  gateway-service:
+    build:
+      context: .
+      dockerfile: services/gateway-service/Dockerfile
+    container_name: gateway-service
+    ports:
+      - "${GATEWAY_SERVICE_PORT:-1000}:1000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_GROUP_ID: gateway-service
+      KAFKA_TOPIC_TASK_CREATED: task.created
+      KAFKA_TOPIC_TASK_PARSED: task.parsed
+      KAFKA_TOPIC_TASK_CONTENT_READY: task.content_ready
+      KAFKA_TOPIC_TASK_BUILT: task.built
+      KAFKA_TOPIC_TASK_FAILED: task.failed
+      FILE_SERVICE_GRPC_HOST: file-service
+      FILE_SERVICE_GRPC_PORT: 50051
+      MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE}
+      GATEWAY_PORT: 1000
+      LOG_LEVEL: ${LOG_LEVEL}
+    depends_on:
+      kafka:
+        condition: service_healthy
+      file-service:
+        condition: service_started
+      redis:
+        condition: service_healthy
 
 volumes:
   minio_data:
