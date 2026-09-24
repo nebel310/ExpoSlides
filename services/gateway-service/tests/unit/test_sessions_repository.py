@@ -12,7 +12,7 @@ async def test_touch_extends_ttl(redis):
     """Проверяет обновление TTL"""
     await SessionRepository.create(redis, "sid1")
     await SessionRepository.touch(redis, "sid1")
-    ttl = await redis.ttl(SessionRepository._tasks_key("sid1"))
+    ttl = await redis.ttl(SessionRepository._key("sid1"))
     assert 0 < ttl <= SessionRepository.TTL
 
 

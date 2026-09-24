@@ -117,7 +117,9 @@ async def test_get_task_other_session(client, monkeypatch):
         cookies={"exposlides_sid": sid_a},
     )
     task_id = create.json()["task_id"]
+    client.cookies.clear()
     sid_b = await _bootstrap(client)
+    assert sid_b != sid_a
     response = await client.get(
         f"/api/tasks/{task_id}",
         cookies={"exposlides_sid": sid_b},

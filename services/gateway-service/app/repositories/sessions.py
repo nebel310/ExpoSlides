@@ -9,6 +9,11 @@ class SessionRepository:
     TTL = settings.redis_session_ttl
 
     @classmethod
+    def _key(cls, sid: str) -> str:
+        """Возвращает ключ сессии"""
+        return f"{cls.PREFIX}{sid}"
+
+    @classmethod
     def _tasks_key(cls, sid: str) -> str:
         """Возвращает ключ множества задач сессии"""
         return f"{cls.PREFIX}{sid}:tasks"
@@ -16,19 +21,17 @@ class SessionRepository:
     @classmethod
     async def create(cls, redis: aioredis.Redis, sid: str) -> None:
         """Создаёт новую сессию"""
-        key = cls._tasks_key(sid)
-        await redis.sadd(key, "__init__")
-        await redis.srem(key, "__init__")
-        await redis.expire(key, cls.TTL)
+        await redis.set(cls._key(sid), "1", ex=cls.TTL)
 
     @classmethod
     async def exists(cls, redis: aioredis.Redis, sid: str) -> bool:
         """Проверяет существование сессии"""
-        return await redis.exists(cls._tasks_key(sid)) > 0
+        return await redis.exists(cls._key(sid)) > 0
 
     @classmethod
     async def touch(cls, redis: aioredis.Redis, sid: str) -> None:
         """Обновляет TTL сессии"""
+        await redis.expire(cls._key(sid), cls.TTL)
         await redis.expire(cls._tasks_key(sid), cls.TTL)
 
     @classmethod
