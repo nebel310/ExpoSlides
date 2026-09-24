@@ -57,6 +57,7 @@ async def test_generate_content_valid():
         result = await generate_content(_request())
     assert result.passed is True
     assert result.reason is None
+    assert result.validation_report == {"ok": True, "issues": []}
     assert 1 in result.content
     assert result.content[1]["placeholders"] == {"0": "текст 1"}
 

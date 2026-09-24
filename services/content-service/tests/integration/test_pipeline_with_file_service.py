@@ -109,7 +109,11 @@ async def test_pipeline_valid_generation_publishes_content_ready(
         content_file_id = data["payload"]["content_file_id"]
         content_bytes = await file_client.download_file(content_file_id)
         content = json.loads(content_bytes.decode("utf-8"))
-        assert content == STUB_CONTENT
+        assert content == {
+            "content": STUB_CONTENT,
+            "validation_report": None,
+            "error": None,
+        }
 
         assert len(domain_calls) == 1
         request = domain_calls[0]
