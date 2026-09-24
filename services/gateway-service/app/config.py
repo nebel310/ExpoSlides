@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,7 +10,7 @@ class Settings(BaseSettings):
     redis_session_ttl: int = 2592000
 
     kafka_bootstrap_servers: str = "kafka:9092"
-    kafka_group_id: str = "gateway-service"
+    gateway_kafka_group_id: str = Field(default="gateway-service", alias="GATEWAY_KAFKA_GROUP_ID")
     kafka_topic_task_created: str = "task.created"
     kafka_topic_task_parsed: str = "task.parsed"
     kafka_topic_task_content_ready: str = "task.content_ready"

@@ -28,7 +28,7 @@ class GatewayKafkaConsumer:
             settings.kafka_topic_task_built,
             settings.kafka_topic_task_failed,
             bootstrap_servers=settings.kafka_bootstrap_servers,
-            group_id=settings.kafka_group_id,
+            group_id=settings.gateway_kafka_group_id,
             enable_auto_commit=False,
             auto_offset_reset="latest",
         )
