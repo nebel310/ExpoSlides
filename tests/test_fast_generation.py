@@ -558,3 +558,20 @@ def test_hundred_heterogeneous_short_fields_repair_only_invalid_values(
         for alias, field in fields.items()
     }
     assert actual == expected
+
+
+def test_fast_feedback_reaches_outline_batch_and_repair(monkeypatch, service_importer):
+    fast, graph, presentation = _load(service_importer)
+    state = _state(graph, presentation)
+    state.feedback = "Сократи вводную часть, сохрани основные тезисы."
+    first = {f"field_{index:04d}": TEXT for index in range(4)}
+    first["field_0001"] = ""
+    client = FakeClient([_outline()], [first, {"field_0001": TEXT}])
+    monkeypatch.setattr(fast, "fast_llm_client", client)
+    result = asyncio.run(fast.generate_fast(state))
+    assert result["validation"].ok
+    assert len(client.calls) == 3
+    for _, prompt, _ in client.calls:
+        assert state.feedback in prompt
+        assert "Это не источник фактов" in prompt
+    assert state.script == SOURCE

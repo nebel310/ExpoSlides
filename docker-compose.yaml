@@ -153,6 +153,26 @@ services:
       file-service:
         condition: service_started
 
+  builder-service:
+    build:
+      context: .
+      dockerfile: services/builder-service/Dockerfile
+    restart: on-failure
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_GROUP_ID: builder-service
+      KAFKA_TOPIC_TASK_CONTENT_READY: task.content_ready
+      KAFKA_TOPIC_TASK_BUILT: task.built
+      KAFKA_TOPIC_TASK_FAILED: task.failed
+      FILE_SERVICE_GRPC_HOST: file-service
+      FILE_SERVICE_GRPC_PORT: 50051
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      kafka:
+        condition: service_healthy
+      file-service:
+        condition: service_started
+
   gateway-service:
     build:
       context: .

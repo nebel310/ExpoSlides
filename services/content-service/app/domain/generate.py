@@ -26,6 +26,7 @@ async def generate_content(request: ContentGenerationRequest) -> ContentGenerati
     initial_state = ContentGraphState(
         presentation=presentation,
         script=request.script,
+        feedback=request.feedback,
         user_mapping=None,
         settings=GenerationSettings(),
     )

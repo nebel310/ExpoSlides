@@ -262,7 +262,7 @@ async def _generate_outline(state: ContentGraphState, budget: _RepairBudget) -> 
         slide_limit,
         combined=True,
     )
-    base_prompt = _outline_prompt(state)
+    base_prompt = nodes._with_external_feedback(_outline_prompt(state), state.feedback)
     prompt = base_prompt
     while True:
         try:
@@ -360,6 +360,7 @@ async def _repair_plan(
         f"<REJECTED_PLAN>{_json(draft.plan.model_dump())}</REJECTED_PLAN>\n"
         f"<SOURCE_SCRIPT>\n{state.script}\n</SOURCE_SCRIPT>"
     )
+    prompt = nodes._with_external_feedback(prompt, state.feedback)
     plan = await fast_llm_client.generate_json(prompt, repair_model)
     plan = normalize_plan_numbering(plan, state.script)
     plan = _repair_duplicate_template_indices(state, plan)
@@ -632,7 +633,8 @@ async def _request_repairs(
                 _content_repair_prompt(state, draft, group, context_fields, values, issues)
             )
             response = await fast_llm_client.generate_json_object(
-                prompt, _batch_schema(group),
+                nodes._with_external_feedback(prompt, state.feedback if state else None),
+                _batch_schema(group),
                 model=service_settings.llm_fast_repair_model,
             )
             if set(response) - set(group):
@@ -1074,7 +1076,9 @@ async def generate_fast(state: ContentGraphState) -> dict[str, Any]:
             elif issues:
                 response = await _request_repairs(state, draft, requested, fields, values, issues)
             else:
-                prompt = _batch_prompt(state, draft, requested, fields, values, issues)
+                prompt = nodes._with_external_feedback(
+                    _batch_prompt(state, draft, requested, fields, values, issues), state.feedback
+                )
                 response = await fast_llm_client.generate_json_object(prompt, schema)
         except LLMGenerationError as error:
             if not getattr(error, "invalid_response", False):

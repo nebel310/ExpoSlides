@@ -140,3 +140,16 @@ uv run ruff check .
 ```
 
 Тесты работают без LLM API. [Сценарии и замеры генерации](evals/README.md).
+
+## Сетевой builder и внешние исправления
+
+Для цепочки gateway → parser → content → builder добавлен worker
+[`builder-service`](services/builder-service/README.md): он принимает
+`task.content_ready`, сохраняет PPTX через file-service и публикует `task.built`.
+Локальный веб-интерфейс выше продолжает использовать файловый CLI.
+Настройки и границы проверки сетевого worker описаны в его README.
+
+[Content-service](services/content-service/README.md) передаёт feedback внешнего
+retry в планирование и генерацию отдельно от исходного текста; grounding остаётся
+обязательным. Эти изменения не добавляют генерацию трёх альтернатив и не исправляют
+отдельный известный дефект присоединения WebSocket к комнате gateway.

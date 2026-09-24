@@ -417,6 +417,7 @@ def test_retry_preserves_valid_slides(monkeypatch, service_importer) -> None:
         analysis,
         settings,
         source_text=None,
+        feedback=None,
     ):
         assert source_text == "Текст"
         regenerated_indices.append(slide_plan.template_slide_index)

@@ -202,8 +202,11 @@ def test_network_content_matches_cli_and_builder(
     _write_template(template)
     script.write_text("Команда готовит запуск продукта", encoding="utf-8")
 
+    received_feedback = []
+
     class FakeGraph:
         async def ainvoke(self, state):
+            received_feedback.append(state.feedback)
             return state.model_copy(update={
                 "content": {
                     1: graph_state.GeneratedSlideContent(
@@ -241,6 +244,7 @@ def test_network_content_matches_cli_and_builder(
         envelope, payload, "task.content_retry" if retry else "task.parsed"
     ))
 
+    assert received_feedback == [None, "Уточнить формулировки" if retry else None]
     file_client.upload_file.assert_awaited_once()
     uploaded = file_client.upload_file.await_args.kwargs
     assert uploaded["filename"] == "content.json"
