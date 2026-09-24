@@ -128,8 +128,13 @@ async def wait_for_event(
     task_id: str,
     topics: set[str],
     timeout: float = 90.0,
+    ignore_content_stage_failures: bool = True,
 ) -> dict[str, Any]:
-    """Ждёт Kafka-событие для task_id из указанных топиков"""
+    """Ждёт Kafka-событие для task_id из указанных топиков
+
+    По умолчанию игнорирует task.failed со stage='content' —
+    это фейл content-service, который тест намеренно не вызывает.
+    """
     deadline = asyncio.get_event_loop().time() + timeout
     while True:
         remaining = deadline - asyncio.get_event_loop().time()
@@ -139,8 +144,15 @@ async def wait_for_event(
         if message.topic not in topics:
             continue
         payload = json.loads(message.value.decode("utf-8"))
-        if payload.get("task_id") == task_id:
-            return {"topic": message.topic, "payload": payload}
+        if payload.get("task_id") != task_id:
+            continue
+        if (
+            ignore_content_stage_failures
+            and message.topic == "task.failed"
+            and (payload.get("payload") or {}).get("stage") == "content"
+        ):
+            continue
+        return {"topic": message.topic, "payload": payload}
 
 
 async def publish_content_ready(
