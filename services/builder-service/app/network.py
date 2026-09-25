@@ -15,12 +15,17 @@ from uuid import UUID
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from app.builder import PPTXBuilder
 from app.models.content import GeneratedContent
+from app.export.pdf import PdfExportError, convert_pptx_to_pdf
+from app.export.html import HtmlExportError, convert_pptx_to_html
+from app.export.pdf import PdfExportError, convert_pptx_to_pdf
 from app.models.presentation import Presentation
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 PPTX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+PDF_CONTENT_TYPE = "application/pdf"
+HTML_CONTENT_TYPE = "text/html"
 
 
 class Settings(BaseSettings):
@@ -35,6 +40,7 @@ class Settings(BaseSettings):
     file_service_grpc_host: str = "file-service"
     file_service_grpc_port: int = Field(default=50051, ge=1, le=65535)
     file_service_timeout: float = Field(default=60, gt=0)
+    pdf_convert_timeout: float = Field(default=120, gt=0)
     log_level: str = "INFO"
 
 
@@ -48,21 +54,34 @@ class MessageEnvelope(BaseModel):
 
 
 class ContentReadyPayload(BaseModel):
-    """Файлы, опубликованные content-service."""
+    """Файлы, опубликованные content-service"""
 
     structure_file_id: UUID
     content_file_id: UUID
     template_file_id: UUID
     script_file_id: UUID
+    formats: list[str] = Field(default_factory=lambda: ["pptx"])
+
+
+ALLOWED_FORMATS = {"pptx", "pdf", "html"}
+def _normalize_formats(raw: list[str] | None) -> set[str]:
+    """Оставляет только известные форматы, всегда включает pptx"""
+    if not raw:
+        return {"pptx"}
+    cleaned = {item.strip().lower() for item in raw if isinstance(item, str)}
+    cleaned &= ALLOWED_FORMATS
+    cleaned.add("pptx")
+    return cleaned
 
 
 class BuilderPipeline:
-    """Собирает файл через существующий builder, сохраняя порядок и стили."""
+    """Собирает файл через существующий builder, сохраняя порядок и стили"""
 
-    def __init__(self, file_client: Any) -> None:
+    def __init__(self, file_client: Any, settings: Settings) -> None:
         self.file_client = file_client
+        self.settings = settings
 
-    async def process(self, envelope: MessageEnvelope) -> dict[str, str]:
+    async def process(self, envelope: MessageEnvelope) -> dict[str, Any]:
         payload = ContentReadyPayload.model_validate(envelope.payload)
         if envelope.error:
             raise ValueError("Входное событие содержит ошибку content-service")
@@ -71,22 +90,50 @@ class BuilderPipeline:
         template = await self.file_client.download_file(str(payload.template_file_id))
         template_data = Presentation.model_validate_json(structure)
         content_data = GeneratedContent.model_validate_json(content)
+        formats = _normalize_formats(payload.formats)
+        extra_files: dict[str, str] = {}
+
         with tempfile.TemporaryDirectory(prefix="exposlides-builder-") as directory:
-            source = Path(directory) / "template.pptx"
-            target = Path(directory) / "result.pptx"
+            workdir = Path(directory)
+            source = workdir / "template.pptx"
+            target = workdir / "result.pptx"
             await asyncio.to_thread(source.write_bytes, template)
-            # PPTXBuilder сохраняет атомарно и повторно открывает созданный файл.
             await PPTXBuilder.build(source, template_data, content_data, target)
             result_bytes = await asyncio.to_thread(target.read_bytes)
-        result_id = await self.file_client.upload_file(
-            filename="result.pptx",
-            content=result_bytes,
-            content_type=PPTX_CONTENT_TYPE,
-            task_id=str(envelope.task_id),
-        )
+            result_id = await self.file_client.upload_file(
+                filename="result.pptx",
+                content=result_bytes,
+                content_type=PPTX_CONTENT_TYPE,
+                task_id=str(envelope.task_id),
+            )
+            if "pdf" in formats:
+                pdf_path = await convert_pptx_to_pdf(
+                    target, workdir, timeout=self.settings.pdf_convert_timeout,
+                )
+                pdf_bytes = await asyncio.to_thread(pdf_path.read_bytes)
+                pdf_id = await self.file_client.upload_file(
+                    filename="result.pdf",
+                    content=pdf_bytes,
+                    content_type=PDF_CONTENT_TYPE,
+                    task_id=str(envelope.task_id),
+                )
+                extra_files["pdf"] = str(UUID(pdf_id))
+            if "html" in formats:
+                html_path = workdir / "result.html"
+                await convert_pptx_to_html(target, html_path)
+                html_bytes = await asyncio.to_thread(html_path.read_bytes)
+                html_id = await self.file_client.upload_file(
+                    filename="result.html",
+                    content=html_bytes,
+                    content_type=HTML_CONTENT_TYPE,
+                    task_id=str(envelope.task_id),
+                )
+                extra_files["html"] = str(UUID(html_id))
+
         return {
             **payload.model_dump(mode="json"),
             "result_file_id": str(UUID(result_id)),
+            "extra_files": extra_files,
         }
 
 
@@ -162,7 +209,7 @@ async def serve(settings: Settings | None = None, stop_event: asyncio.Event | No
                 stack.push_async_callback(client.stop)
                 await client.start()
             worker = asyncio.create_task(consume(
-                consumer, BuilderPipeline(file_client), producer, settings
+                consumer, BuilderPipeline(file_client, settings), producer, settings
             ))
             stopper = asyncio.create_task(stop_event.wait())
             try:
