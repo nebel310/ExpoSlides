@@ -8,7 +8,8 @@ from pathlib import Path
 
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.text import PP_ALIGN
-from pptx.presentation import Presentation as PPTXPresentation
+from pptx import Presentation as PPTXPresentation
+
 
 logger = logging.getLogger(__name__)
 
