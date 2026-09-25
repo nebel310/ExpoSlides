@@ -1,5 +1,3 @@
-"""Сетевой builder: task.content_ready → файл PPTX → task.built."""
-
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +15,6 @@ from app.builder import PPTXBuilder
 from app.models.content import GeneratedContent
 from app.export.pdf import PdfExportError, convert_pptx_to_pdf
 from app.export.html import HtmlExportError, convert_pptx_to_html
-from app.export.pdf import PdfExportError, convert_pptx_to_pdf
 from app.models.presentation import Presentation
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
