@@ -1,0 +1,16 @@
+:2000 {
+    handle /api/* {
+        reverse_proxy gateway-service:1000
+    }
+    handle /ws/* {
+        reverse_proxy gateway-service:1000
+    }
+    handle /health {
+        reverse_proxy gateway-service:1000
+    }
+    handle {
+        root * /srv/frontend
+        try_files {path} /index.html
+        file_server
+    }
+}
