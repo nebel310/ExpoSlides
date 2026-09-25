@@ -1,90 +1,119 @@
 # Parser Service
 
-Микросервис парсинга PPTX-шаблонов. Читает задачи из Kafka, разбирает шаблон и публикует структуру презентации обратно в Kafka. Общается с file-service по gRPC, отдаёт gRPC `HealthCheck`.
+Разбирает PPTX-шаблон в структурированный JSON (`structure.json`) со всеми элементами дизайн-системы: слайды, макеты, темы, типографика, сетка, паттерны, компоненты, ассеты. Публикует результат в file-service и передаёт дальше по пайплайну через Kafka.
+
+## Роль в системе
+
+```
+gateway ──task.created──▶ parser-service ──task.parsed──▶ content-service
+                                │
+                                ├──gRPC──▶ file-service (скачать pptx, загрузить structure.json + ассеты)
+                                └──Kafka──▶ task.failed (при ошибке)
+```
 
 ## Что делает
 
-- Подписан на топик `task.created`, читает задачи на парсинг.
-- Скачивает PPTX-шаблон из file-service по `template_file_id`.
-- Разбирает шаблон и сохраняет структуру (`structure.json`) в file-service.
-- Выгружает бинарные ассеты (картинки, фоны, OLE-объекты) отдельными файлами в file-service, ссылки на них попадают в `assets`.
-- Вычисляет типографическую шкалу, сетку и композиционные паттерны из макетов.
-- Находит повторяющиеся компоненты и дедуплицирует ассеты по содержимому.
-- Проставляет `content_hash` слайдов для поиска дублей в аудите.
-- Публикует `task.parsed` с `structure_file_id`, чтобы следующие сервисы пайплайна могли продолжить работу.
-- При технической ошибке публикует `task.failed` со `stage = "parser"`.
+- Подписан на топик `task.created`
+- Скачивает PPTX-шаблон из file-service по gRPC
+- Разбирает шаблон в модель `Presentation` схемы v2.0.0
+- Выгружает бинарные ассеты (картинки, фоны, OLE-объекты) отдельными файлами в file-service
+- Вычисляет типографическую шкалу, сетку и композиционные паттерны
+- Находит повторяющиеся компоненты и дедуплицирует ассеты по SHA-256
+- Проставляет `content_hash` слайдов для поиска дублей
+- Публикует `structure.json` в file-service
+- Отправляет `task.parsed` со ссылками на structure, template, script и список форматов результата
+- При технической ошибке публикует `task.failed` со `stage="parser"`
 
-## Схема данных
+## Запуск
 
-Результат парсинга версионирован полем `schema_version`. Текущая версия — **2.0.0**. Analyzer, Content Service, Composer и Audit должны проверять её перед работой и падать с понятной ошибкой на несовместимой версии. Схема описана в `app/models/presentation.py`.
+Из корня проекта
 
-## Взаимодействие по Kafka
+```
+docker compose up -d --build parser-service
+```
 
-Сервис не слушает порт для Kafka, только подключается к брокеру как клиент. Брокер: `kafka:9092` (KRaft). Сериализация — JSON.
+Сервис публикует gRPC-порт `50052` для healthcheck, основной обмен идёт через Kafka.
 
-### Общий конверт сообщения
+### CLI-режим (ручная отладка)
 
-Все сообщения в пайплайне ходят в едином конверте:
+```bash
+cd services/parsing-service
+uv run python -m app.main --input-pptx test.pptx --output-json output.json
+```
+
+## Переменные окружения
+
+| Переменная | По умолчанию | Описание |
+|---|---|---|
+| `KAFKA_BOOTSTRAP_SERVERS` | `kafka:9092` | Адрес брокера |
+| `KAFKA_GROUP_ID` | `parser-service` | Group id консьюмера |
+| `KAFKA_TOPIC_TASK_CREATED` | `task.created` | Слушаем |
+| `KAFKA_TOPIC_TASK_PARSED` | `task.parsed` | Публикуем |
+| `KAFKA_TOPIC_TASK_FAILED` | `task.failed` | Публикуем при ошибке |
+| `FILE_SERVICE_GRPC_HOST` | `file-service` | Адрес file-service |
+| `FILE_SERVICE_GRPC_PORT` | `50051` | Порт file-service |
+| `PARSER_SERVICE_PORT` | `50052` | Порт gRPC healthcheck |
+
+## Входящий контракт
+
+### `task.created`
 
 ```json
 {
-  "task_id": "uuid",
+  "task_id": "UUID",
   "attempt": 1,
-  "payload": { ... },
+  "payload": {
+    "template_file_id": "UUID",
+    "script_file_id": "UUID",
+    "formats": ["pptx", "pdf", "html"]
+  },
   "error": null
 }
 ```
 
-### Топики
+Поля:
 
-| Топик | Роль сервиса | Payload |
-|---|---|---|
-| `task.created` | consumer | `{ "template_file_id": "uuid", "script_file_id": "uuid" }` |
-| `task.parsed` | producer | `{ "structure_file_id": "uuid", "template_file_id": "uuid", "script_file_id": "uuid" }` |
-| `task.failed` | producer | `{ "stage": "parser", "reason": "..." }` |
+- `template_file_id` — `file_id` ранее загруженного `.pptx`-шаблона.
+- `script_file_id` — `file_id` ранее загруженного `.txt`-сценария. Parser его не читает, только пробрасывает дальше.
+- `formats` — необязательный список форматов результата. Дефолт `["pptx"]`. Parser **не интерпретирует** его, только пробрасывает в `task.parsed`.
 
-### Поведение
+## Исходящий контракт
 
-- Читает `task.created`, валидирует конверт и payload.
-- Скачивает PPTX-шаблон (`template_file_id`, последняя версия) из file-service.
-- Разбирает шаблон, загружает `structure.json` в file-service (`content_type = "application/json"`, `task_id` пробрасывается).
-- Загружает каждый ассет отдельным вызовом `UploadFile`, прописывает полученный `file_id` в `assets[].file_id`.
-- Публикует `task.parsed` с `structure_file_id`, `template_file_id`, `script_file_id`.
-- `attempt` из входящего конверта пробрасывается в исходящий без изменений.
-- Коммитит offset после публикации результата (или после `task.failed`).
+### `task.parsed`
 
-### Ошибки
+```json
+{
+  "task_id": "UUID",
+  "attempt": 1,
+  "payload": {
+    "structure_file_id": "UUID",
+    "template_file_id": "UUID",
+    "script_file_id": "UUID",
+    "formats": ["pptx", "pdf", "html"]
+  },
+  "error": null
+}
+```
 
-- **Технический фейл** (шаблон не найден, PPTX битый, file-service недоступен) — публикует `task.failed` со `stage = "parser"` и непустым `reason`, затем коммитит offset.
-- **Невалидный конверт или payload** — логирует и коммитит offset без публикации. Ретраев нет.
-- **Бизнес-провалов нет.** Парсинг либо отработал, либо упал технически.
+`structure_file_id` — ссылка на загруженный `structure.json`. Content-service скачает его и будет планировать слайды по нему.
 
-### Идемпотентность
+### `task.failed`
 
-Не гарантируется. При повторной доставке одного и того же `task_id` сервис обработает задачу ещё раз и загрузит новую версию `structure.json`. Это безопасно: file-service поддерживает версионирование.
+```json
+{
+  "task_id": "UUID",
+  "attempt": 1,
+  "payload": {
+    "stage": "parser",
+    "reason": "текстовое описание причины"
+  },
+  "error": "текстовое описание причины"
+}
+```
 
-## gRPC API
+## Схема `structure.json`
 
-Порт: `50052`. Контракт: `proto/parser_service.proto`.
-
-### HealthCheck
-
-Проверка живости сервиса. Возвращает `status = "ok"`.
-
-## Взаимодействие с file-service
-
-Сервис — gRPC-клиент file-service (контракт `proto/file_service.proto` в корне проекта). Использует:
-
-- `DownloadFile(file_id, version=0)` — скачать PPTX-шаблон.
-- `UploadFile(filename="structure.json", content, content_type="application/json", task_id, file_id=None)` — залить структуру.
-- `UploadFile(filename=<original_name>, content, content_type="image/png", task_id)` — залить каждый ассет. Имя файла и MIME берутся из метаданных картинки, `file_id` в ответе прописывается в `assets[].file_id`.
-- `DeleteFile(file_id)` — используется только в тестах.
-
-Между сервисами ходят только `file_id`, байты по Kafka не передаются.
-
-## Формат structure.json
-
-Результат парсинга — сериализованная модель `Presentation` схемы `2.0.0`:
+Схема версионирована полем `schema_version`. Текущая версия — **2.0.0**. Content, builder и audit должны проверять её перед работой и падать с понятной ошибкой на несовместимой версии.
 
 ```json
 {
@@ -94,14 +123,14 @@
   "slide_height": 6858000,
   "tokens": {
     "theme": {
-      "colors": { "dk1": "000000", "accent1": "5B9BD5" },
-      "fonts": { "major": "Segoe UI Light", "minor": "Segoe UI" },
+      "colors": {"dk1": "000000", "accent1": "5B9BD5"},
+      "fonts": {"major": "Segoe UI Light", "minor": "Segoe UI"},
       "all_fonts": ["Segoe UI", "Segoe UI Light"]
     },
     "typography": {
       "entries": [
-        { "size_pt": 48.0, "role": "display", "occurrences": 1 },
-        { "size_pt": 11.0, "role": "body", "occurrences": 90 }
+        {"size_pt": 48.0, "role": "display", "occurrences": 1},
+        {"size_pt": 11.0, "role": "body", "occurrences": 90}
       ],
       "min_pt": 11.0,
       "max_pt": 48.0
@@ -119,8 +148,8 @@
       "name": "content+date+footer+slide_number+title",
       "layout_indices": [2],
       "slots": [
-        { "kind": "title", "bbox": { "left": 521207, "top": 448056, "width": 6877119, "height": 640080 }, "idx": 0 },
-        { "kind": "content", "bbox": { "left": 539496, "top": 1435608, "width": 4416552, "height": 3977640 }, "idx": 10 }
+        {"kind": "title", "bbox": {...}, "idx": 0},
+        {"kind": "content", "bbox": {...}, "idx": 10}
       ]
     }
   ],
@@ -128,15 +157,15 @@
     {
       "id": "component-1",
       "signature": "image|661940|661940|RECTANGLE||122f15f4",
-      "element_template": { "id": "slide-9-shape-8", "type": "image" },
+      "element_template": {"id": "slide-9-shape-8", "type": "image"},
       "occurrences": [
-        { "slide_index": 9, "element_id": "slide-9-shape-8" },
-        { "slide_index": 9, "element_id": "slide-9-shape-7" }
+        {"slide_index": 9, "element_id": "slide-9-shape-8"},
+        {"slide_index": 9, "element_id": "slide-9-shape-7"}
       ]
     }
   ],
   "masters": [
-    { "index": 1, "name": "", "layout_indices": [1, 2, 3] }
+    {"index": 1, "name": "", "layout_indices": [1, 2, 3]}
   ],
   "slides": [
     {
@@ -149,7 +178,7 @@
         {
           "id": "slide-1-shape-2",
           "type": "text",
-          "bbox": { "left": 838200, "top": 1164324, "width": 10515600, "height": 2387600 },
+          "bbox": {"left": 838200, "top": 1164324, "width": 10515600, "height": 2387600},
           "z_order": 2,
           "placeholder_kind": "title",
           "placeholder_idx": 0,
@@ -162,11 +191,7 @@
                 "runs": [
                   {
                     "text": "Добро пожаловать!",
-                    "style": {
-                      "font_name": "Segoe UI Light",
-                      "size_pt": 48.0,
-                      "color_token": "bg1"
-                    }
+                    "style": {"font_name": "Segoe UI Light", "size_pt": 48.0, "color_token": "bg1"}
                   }
                 ]
               }
@@ -176,7 +201,7 @@
           "is_background": false
         }
       ],
-      "background": { "kind": "neutral", "fill": { "type": "none", "gradient_stops": [] } },
+      "background": {"kind": "neutral", "fill": {"type": "none", "gradient_stops": []}},
       "content_hash": "8174891c8903b15b"
     }
   ],
@@ -186,9 +211,9 @@
       "index": 1,
       "layout_type": "title",
       "placeholders": [
-        { "kind": "title", "name": "Заголовок 1", "idx": 0, "bbox": { "left": 521208, "top": 448056, "width": 6876288, "height": 640080 } }
+        {"kind": "title", "name": "Заголовок 1", "idx": 0, "bbox": {...}}
       ],
-      "background": { "kind": "neutral", "fill": { "type": "none", "gradient_stops": [] } }
+      "background": {"kind": "neutral", "fill": {"type": "none", "gradient_stops": []}}
     }
   ],
   "assets": [
@@ -197,174 +222,221 @@
       "content_type": "image/png",
       "size_bytes": 869797,
       "original_name": "image.png",
-      "file_id": null
+      "file_id": "UUID"
     }
   ]
 }
 ```
 
-Что извлекается:
+### Что извлекается
 
-- **Слайды** — элементы, `layout_index`, `pattern_id`, `content_hash` для поиска дублей, флаг `hidden` для элементов за пределами слайда, `is_background` для полноэкранных картинок.
-- **Элементы** — текст с параграфами и runs (шрифт, кегль, bold/italic/underline, цвет в HEX и токен темы, выравнивание, интервал, маркеры, гиперссылки), таблицы с объединениями ячеек, картинки с `asset_id` и метаданными, диаграммы (`chart`), SmartArt (`smartart`), группы (`group`), коннекторы (`connector`), OLE-объекты, автофигуры с геометрией, заливки (solid/gradient/pattern/picture), обводки, повороты.
-- **Layout'ы** — только placeholder'ы и фон, без полного дерева элементов.
-- **Тема** — палитра цветов и шрифты major/minor.
-- **Типографическая шкала** — вычисленные размеры шрифтов с ролями (`display`, `title`, `body` и т.д.).
-- **Сетка** — вычисленные поля и позиции колонок по placeholder'ам макетов.
-- **Паттерны** — группы макетов с одинаковой сигнатурой placeholder'ов.
-- **Компоненты** — повторяющиеся элементы на 2+ слайдах.
-- **Ассеты** — дедуплицированные по SHA-256 байты картинок, фонов, OLE-объектов. Загружаются в file-service отдельно, `file_id` заполняется пайплайном после загрузки.
-- **Masters** — список с привязкой к макетам.
+**Слайды:**
 
-## Переменные окружения
+- Элементы, `layout_index`, `pattern_id`
+- `content_hash` — стабильный хэш содержимого для поиска дублей
+- Флаг `hidden` — для элементов за пределами слайда
+- Флаг `is_background` — для полноэкранных картинок
 
-```
-KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-KAFKA_GROUP_ID=parser-service
-KAFKA_TOPIC_TASK_CREATED=task.created
-KAFKA_TOPIC_TASK_PARSED=task.parsed
-KAFKA_TOPIC_TASK_FAILED=task.failed
-FILE_SERVICE_GRPC_HOST=file-service
-FILE_SERVICE_GRPC_PORT=50051
-PARSER_SERVICE_PORT=50052
-```
+**Элементы:**
 
-Для интеграционных и e2e-тестов значения по умолчанию уже подходят для локального запуска. При необходимости переопредели:
+- Типы: `text`, `image`, `table`, `chart`, `smartart`, `group`, `connector`, `ole`, `shape`, `other`
+- Текст с параграфами и runs: шрифт, кегль, bold/italic/underline, цвет в HEX и токен темы, выравнивание, интервал, маркеры, гиперссылки
+- Таблицы с объединениями ячеек
+- Картинки с `asset_id` и метаданными
+- Диаграммы (`chart`): тип, серии, оси, легенда, подписи данных
+- SmartArt: layout_name, style_name, color_name, дерево узлов
+- Группы фигур (рекурсивно)
+- Коннекторы: тип, координаты, стрелки
+- OLE-объекты
+- Автофигуры с геометрией
+- Заливки: solid / gradient / pattern / picture
+- Обводки, повороты
 
-```
-FILE_SERVICE_GRPC_HOST=localhost
-FILE_SERVICE_GRPC_PORT=50051
-PARSER_SERVICE_GRPC_HOST=localhost
-PARSER_SERVICE_GRPC_PORT=50052
-KAFKA_EXTERNAL_BOOTSTRAP=localhost:9093
-KAFKA_TOPIC_TASK_CREATED=task.created
-KAFKA_TOPIC_TASK_PARSED=task.parsed
-KAFKA_TOPIC_TASK_FAILED=task.failed
-```
+**Layout'ы:**
 
-## Запуск
+- Placeholder'ы и фон
+- Без полного дерева элементов
+
+**Тема:**
+
+- Палитра цветов и шрифты major/minor
+- Полный список шрифтов, встречающихся в runs
+
+**Типографическая шкала:**
+
+- Размеры шрифтов с ролями (`display`, `title`, `subtitle`, `heading`, `subheading`, `body`, `caption`, `small`)
+- Минимум и максимум
+
+**Сетка:**
+
+- Поля слева/справа/сверху/снизу
+- Позиции колонок и строк по placeholder'ам макетов
+
+**Паттерны:**
+
+- Группы макетов с одинаковой сигнатурой placeholder'ов
+
+**Компоненты:**
+
+- Элементы, повторяющиеся на 2+ слайдах
+
+**Masters:**
+
+- Список с привязкой к макетам
+
+**Ассеты:**
+
+- Дедуплицированные по SHA-256 байты картинок, фонов, OLE
+- Загружаются в file-service отдельно, `file_id` заполняется в pipeline
+
+## Как работает парсинг
+
+1. Скачивает PPTX из file-service по gRPC.
+2. Открывает через `python-pptx`.
+3. Извлекает тему из `theme1.xml`.
+4. Разбирает макеты: placeholder'ы, фон.
+5. Строит паттерны по сигнатурам макетов.
+6. Разбирает мастера.
+7. Для каждого слайда:
+   - Все элементы с типами и стилями.
+   - Метаданные layout'а и pattern_id.
+   - Фон.
+   - Помечает `hidden` и `is_background`.
+   - Считает `content_hash`.
+8. Собирает все шрифты, типографическую шкалу, сетку.
+9. Находит повторяющиеся компоненты.
+10. Дедуплицирует ассеты по содержимому.
+11. Загружает каждый ассет в file-service отдельным `UploadFile`, получает `file_id`, прописывает в `assets[].file_id`.
+12. Сериализует `Presentation` в `structure.json`, грузит в file-service.
+13. Публикует `task.parsed`.
+
+## Дедупликация ассетов
+
+Каждая картинка, фон и OLE-объект регистрируется по SHA-256 от байтов. Если один и тот же файл встречается на нескольких слайдах — в `assets` он будет один раз, а ссылки из слайдов пойдут на тот же `asset_id`.
+
+## `content_hash` слайда
+
+Стабильный хэш SHA-256 от комбинации типов и координат элементов, текстов, `asset_id`. Используется audit-сервисом для поиска дублей слайдов и проверки «слайд не изменился».
+
+Хэш **не зависит** от порядка элементов внутри `elements[]` на уровне XML, но зависит от:
+- типа каждого элемента,
+- `bbox.left`, `bbox.top`,
+- текста всех runs,
+- `asset_id` картинок,
+- рекурсивно — детей групп.
+
+## Ошибки
+
+- **Технический фейл** (шаблон не найден, PPTX битый, file-service недоступен) — публикует `task.failed` со `stage="parser"` и непустым `reason`, коммитит offset.
+- **Невалидный конверт или payload** — логирует и коммитит offset без публикации. Ретраев нет.
+- **Бизнес-провалов нет.** Парсинг либо отработал, либо упал технически.
+
+## Идемпотентность
+
+Не гарантируется. При повторной доставке одного и того же `task_id` сервис обработает задачу ещё раз и загрузит новую версию `structure.json`. Это безопасно: file-service поддерживает версионирование.
+
+## Формат `task.created` при ретрае
+
+Parser не публикует `task.content_retry`, но если такой топик появится в его группе — он его проигнорирует, потому что подписан только на `task.created`.
+
+## Тесты
 
 Из корня проекта:
 
 ```bash
-docker compose up -d --build
+uv run pytest services/parsing-service/tests -v \
+    --ignore=services/parsing-service/tests/integration \
+    --ignore=services/parsing-service/tests/e2e
 ```
 
-Сервис доступен на `localhost:50052` (gRPC healthcheck). Kafka — `localhost:9093` (EXTERNAL listener для подключения с хоста).
+Три группы:
 
-## Генерация gRPC-кода
+**Юнит** (без инфраструктуры):
 
-При изменении `proto/parser_service.proto` или `proto/file_service.proto` (нужен для клиента file-service):
+- `test_pptx_parser.py` — базовый парсинг
+- `test_pptx_parser_v2.py` — контракт v2
+- `test_pptx_text.py` — текст, runs, стили
+- `test_pptx_shapes.py` — фигуры, группы, коннекторы
+- `test_pptx_tables.py` — таблицы и объединения
+- `test_pptx_charts.py` — диаграммы
+- `test_pptx_smartart.py` — SmartArt
+- `test_pptx_assets.py` — дедупликация ассетов
+- `test_pptx_tokens.py` — тема, типографика, сетка
+- `test_consumer.py`, `test_producer.py`, `test_schemas.py` — Kafka
+- `test_main.py` — CLI
+- `test_pipeline.py` — оркестрация
 
-```bash
-uv run python -m grpc_tools.protoc \
-  -Iproto \
-  --python_out=services/parsing-service \
-  --grpc_python_out=services/parsing-service \
-  proto/parser_service.proto \
-  proto/file_service.proto
-```
-
-В Docker-образе генерация выполняется автоматически при сборке.
-
-## Тесты
-
-Все тесты делятся на три группы.
-
-**Юнит** — не требуют инфраструктуры:
-
-```bash
-uv run pytest services/parsing-service/tests -v --ignore=services/parsing-service/tests/integration --ignore=services/parsing-service/tests/e2e
-```
-
-**Интеграционные** — требуют `file-service`, `minio`, `postgres`:
+**Интеграционные** (нужны file-service, minio, postgres):
 
 ```bash
 docker compose up -d file-service minio postgres
 uv run pytest services/parsing-service/tests/integration -v
 ```
 
-**E2E** — требуют полный стек (`kafka`, `file-service`, `parser-service`, `minio`, `postgres`):
+**E2E** (нужен полный стек):
 
 ```bash
 docker compose up -d
 uv run pytest services/parsing-service/tests/e2e -v
 ```
 
-Если инфраструктура недоступна, соответствующие тесты автоматически скипаются с понятным сообщением. Маркеры `integration` и `e2e` зарегистрированы в корневом `pyproject.toml`.
+Если инфраструктура недоступна — тесты скипаются с понятным сообщением.
 
-## Пример использования (Python)
+## Структура
 
-Публикация задачи на парсинг:
-
-```python
-import asyncio
-import json
-from aiokafka import AIOKafkaProducer
-
-async def main():
-    producer = AIOKafkaProducer(bootstrap_servers="localhost:9093")
-    await producer.start()
-    try:
-        message = {
-            "task_id": "task-123",
-            "attempt": 1,
-            "payload": {
-                "template_file_id": "<file_id pptx>",
-                "script_file_id": "<file_id txt>",
-            },
-            "error": None,
-        }
-        await producer.send_and_wait("task.created", json.dumps(message).encode())
-    finally:
-        await producer.stop()
-
-asyncio.run(main())
+```
+services/parsing-service/
+├── app/
+│   ├── grpc/
+│   │   ├── file_service_client.py
+│   │   └── server.py             # healthcheck
+│   ├── kafka/
+│   │   ├── consumer.py
+│   │   ├── producer.py
+│   │   └── schemas.py            # Kafka-контракты
+│   ├── models/
+│   │   ├── legacy_presentation.py # контракт v1
+│   │   └── presentation.py        # контракт v2
+│   ├── parsers/
+│   │   ├── pptx/
+│   │   │   ├── assets.py          # дедупликация ассетов
+│   │   │   ├── charts.py          # диаграммы
+│   │   │   ├── helpers.py
+│   │   │   ├── parser.py          # главный парсер v2
+│   │   │   ├── shapes.py          # фигуры, группы, коннекторы
+│   │   │   ├── smartart.py        # SmartArt
+│   │   │   ├── tables.py          # таблицы
+│   │   │   ├── text.py            # текст и runs
+│   │   │   └── tokens.py          # тема, типографика, сетка, паттерны, компоненты
+│   │   ├── base.py
+│   │   ├── pptx_parser.py         # парсер v1 (legacy)
+│   │   └── text_style.py          # наследуемые шрифты
+│   ├── services/
+│   │   └── parser_pipeline.py
+│   ├── utils/
+│   │   └── file_utils.py
+│   ├── config.py
+│   └── main.py                    # CLI + serve
+├── tests/
+│   ├── conftest.py
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
+├── Dockerfile
+└── README.md
 ```
 
-Подписка на результат:
+## Ограничения
 
-```python
-import asyncio
-import json
-from aiokafka import AIOKafkaConsumer
+- **Схема v2.0.0 стабильна** — изменения ломают content, builder, audit.
+- **Parser не читает содержимое ассетов** — только сохраняет байты.
+- **Диаграммы и SmartArt читаются частично** — только для последующего анализа, не редактируются.
+- **PPTX должен быть валидным ZIP с `[Content_Types].xml` и папкой `ppt/`** — иначе file-service отклонит загрузку.
+- **Content-Type ассетов** определяется по magic bytes при загрузке в file-service.
 
-async def main():
-    consumer = AIOKafkaConsumer(
-        "task.parsed",
-        "task.failed",
-        bootstrap_servers="localhost:9093",
-        group_id="my-service",
-        auto_offset_reset="latest",
-    )
-    await consumer.start()
-    try:
-        async for message in consumer:
-            data = json.loads(message.value.decode())
-            if data["task_id"] == "task-123":
-                print(message.topic, data["payload"])
-                break
-    finally:
-        await consumer.stop()
+## Что осталось за кадром
 
-asyncio.run(main())
-```
-
-Healthcheck parser-service:
-
-```python
-import grpc
-from google.protobuf import empty_pb2
-import parser_service_pb2, parser_service_pb2_grpc
-
-channel = grpc.insecure_channel("localhost:50052")
-stub = parser_service_pb2_grpc.ParserServiceStub(channel)
-print(stub.HealthCheck(empty_pb2.Empty()).status)
-```
-
-CLI-режим для ручной отладки парсинга без Kafka (запускать из `services/parsing-service`):
-
-```bash
-cd services/parsing-service
-uv run python -m app.main --input-pptx test.pptx --output-json output.json
-```
+- **`formats` не влияет на парсинг** — поле только пробрасывается.
+- **Пользовательская разметка** (`user_mapping`) в parser не поддерживается.
+- **Инкрементального парсинга нет** — каждый запуск пересобирает всё заново.
+- **Ретраев внутри parser нет** — упал, значит `task.failed`.

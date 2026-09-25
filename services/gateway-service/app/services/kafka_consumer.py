@@ -80,6 +80,7 @@ class GatewayKafkaConsumer:
         elif topic == settings.kafka_topic_task_built:
             updates["status"] = "done"
             updates["result_file_id"] = inner.get("result_file_id")
+            updates["extra_files"] = inner.get("extra_files") or {}
         elif topic == settings.kafka_topic_task_failed:
             updates["status"] = "failed"
             updates["error"] = payload.get("error") or inner.get("reason")
@@ -99,6 +100,7 @@ class GatewayKafkaConsumer:
                 "structure_file_id": task.get("structure_file_id"),
                 "content_file_id": task.get("content_file_id"),
                 "result_file_id": task.get("result_file_id"),
+                "extra_files": task.get("extra_files") or {},
                 "error": task.get("error"),
             },
         })

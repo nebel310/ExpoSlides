@@ -19,6 +19,7 @@ class TaskCreatedPayload(BaseModel):
 
     template_file_id: str
     script_file_id: str
+    formats: list[str] = Field(default_factory=lambda: ["pptx"])
 
 
 class TaskParsedPayload(BaseModel):
@@ -27,6 +28,7 @@ class TaskParsedPayload(BaseModel):
     structure_file_id: str
     template_file_id: str
     script_file_id: str
+    formats: list[str] = Field(default_factory=lambda: ["pptx"])
 
 
 class TaskFailedPayload(BaseModel):

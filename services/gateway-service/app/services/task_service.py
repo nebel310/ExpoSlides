@@ -18,12 +18,14 @@ class TaskService:
     """Бизнес-логика задач gateway"""
 
     @classmethod
+    @classmethod
     async def create_task(
         cls,
         redis: aioredis.Redis,
         sid: str,
         template_file_id: str,
         script_file_id: str,
+        formats: list[str] | None = None,
     ) -> dict[str, Any]:
         """Создаёт задачу, сохраняет в Redis и публикует task.created"""
         task_id = str(uuid.uuid4())
@@ -38,6 +40,8 @@ class TaskService:
             "content_file_id": None,
             "result_file_id": None,
             "error": None,
+            "formats": formats or ["pptx"],
+            "extra_files": {},
             "created_at": now,
             "updated_at": now,
         }
@@ -52,6 +56,7 @@ class TaskService:
                     "template_file_id": template_file_id,
                     "script_file_id": script_file_id,
                     "session_id": sid,
+                    "formats": task["formats"],
                 },
                 "error": None,
             },

@@ -16,6 +16,8 @@ from app.utils.cookies import get_sid_from_request
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
+ALLOWED_FORMATS = {"pptx", "pdf", "html"}
+
 
 async def _require_sid(request: Request, redis: aioredis.Redis) -> str:
     """Возвращает sid или падает с 401"""
@@ -34,11 +36,18 @@ async def create_task(
 ) -> CreateTaskResponse:
     """Создаёт задачу на генерацию презентации"""
     sid = await _require_sid(request, redis)
+    unknown = set(body.formats) - ALLOWED_FORMATS
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Неизвестные форматы: {sorted(unknown)}",
+        )
     task = await task_service.create_task(
         redis=redis,
         sid=sid,
         template_file_id=body.template_file_id,
         script_file_id=body.script_file_id,
+        formats=body.formats,
     )
     return CreateTaskResponse(task_id=task["task_id"])
 

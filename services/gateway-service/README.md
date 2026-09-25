@@ -21,9 +21,10 @@ Streamlit ──HTTP──▶ Gateway ──gRPC──▶ file-service (MinIO + 
 
 - Хранит анонимные сессии в Redis, идентифицирует пользователя по cookie `exposlides_sid`
 - Проксирует загрузку и скачивание файлов в `file-service` по gRPC
-- Публикует `task.created` в Kafka
+- Публикует `task.created` в Kafka с выбранными форматами результата
 - Слушает `task.parsed`, `task.content_ready`, `task.built`, `task.failed`
 - Обновляет статус задачи в Redis и пушит событие в комнату сессии через Socket.IO
+- Хранит ссылки на готовые файлы: `result_file_id` (всегда pptx) и `extra_files` (pdf/html)
 - Позволяет пережить F5: cookie сохраняется в браузере, список задач восстанавливается через `GET /api/tasks`
 
 ## Запуск
@@ -84,8 +85,24 @@ curl http://localhost:1000/health
 
 - Cookie остаётся в браузере
 - Фронт повторно вызывает `POST /api/session/bootstrap` (получает тот же `sid`)
-- Фронт вызывает `GET /api/tasks` — получает все задачи пользователя со статусами
+- Фронт вызывает `GET /api/tasks` — получает все задачи пользователя со статусами и ссылками на файлы
 - Фронт подключает WebSocket и продолжает получать события
+
+## Форматы результата
+
+Пользователь при создании задачи выбирает, в каких форматах он хочет получить результат.
+
+| Формат | Что это | Кто производит |
+|---|---|---|
+| `pptx` | Презентация PowerPoint | builder-service, всегда |
+| `pdf` | PDF-версия | builder-service через LibreOffice |
+| `html` | Самодостаточный HTML-файл | builder-service |
+
+- Список передаётся в `POST /api/tasks` в поле `formats`.
+- Дефолт — `["pptx"]`.
+- `pptx` создаётся **всегда**, даже если не указан в списке.
+- Неизвестные значения → HTTP 422.
+- Готовые дополнительные файлы появляются в `extra_files` в `TaskInfo` и в событии `task.built`.
 
 ## Статусы задачи
 
@@ -96,8 +113,6 @@ curl http://localhost:1000/health
 | `building` | Пришло событие `task.content_ready` |
 | `done` | Пришло событие `task.built` |
 | `failed` | Пришло событие `task.failed` |
-
-`task.built` появляется только когда builder-service готов (в текущей версии продюсинга может не быть, статус остановится на `building`).
 
 ## HTTP API
 
@@ -201,11 +216,16 @@ curl -OJ http://localhost:1000/api/files/7b3c... \
 ```json
 {
   "template_file_id": "7b3c...",
-  "script_file_id": "9d1a..."
+  "script_file_id": "9d1a...",
+  "formats": ["pptx", "pdf", "html"]
 }
 ```
 
-Оба `file_id` должны быть получены ранее через `POST /api/files/upload`.
+Поля:
+
+- `template_file_id` — file_id ранее загруженного `.pptx`
+- `script_file_id` — file_id ранее загруженного `.txt`
+- `formats` — необязательный список форматов результата. По умолчанию `["pptx"]`. Допустимые: `pptx`, `pdf`, `html`.
 
 Успех `200`:
 
@@ -222,7 +242,8 @@ curl -OJ http://localhost:1000/api/files/7b3c... \
   "payload": {
     "template_file_id": "7b3c...",
     "script_file_id": "9d1a...",
-    "session_id": "a75dff6b-..."
+    "session_id": "a75dff6b-...",
+    "formats": ["pptx", "pdf", "html"]
   },
   "error": null
 }
@@ -231,7 +252,7 @@ curl -OJ http://localhost:1000/api/files/7b3c... \
 Ошибки:
 
 - `401` — нет сессии
-- `422` — невалидное тело
+- `422` — невалидное тело или неизвестные форматы
 
 ### GET /api/tasks
 
@@ -253,6 +274,11 @@ curl -OJ http://localhost:1000/api/files/7b3c... \
       "content_file_id": "bb34...",
       "result_file_id": "cc56...",
       "error": null,
+      "formats": ["pptx", "pdf", "html"],
+      "extra_files": {
+        "pdf": "dd78...",
+        "html": "ee90..."
+      },
       "created_at": 1727188800.123,
       "updated_at": 1727189012.456
     }
@@ -312,6 +338,10 @@ await sio.connect(
     "structure_file_id": "aa12...",
     "content_file_id": "bb34...",
     "result_file_id": "cc56...",
+    "extra_files": {
+      "pdf": "dd78...",
+      "html": "ee90..."
+    },
     "error": null
   }
 }
@@ -321,7 +351,7 @@ await sio.connect(
 |---|---|---|
 | `task.parsed` | `generating_content` | parser-service закончил, началась генерация контента |
 | `task.content_ready` | `building` | контент готов, началась сборка pptx |
-| `task.built` | `done` | pptx готов, можно скачать по `result_file_id` |
+| `task.built` | `done` | файлы готовы, можно скачать по `result_file_id` и `extra_files` |
 | `task.failed` | `failed` | что-то упало, причина в `payload.error` |
 
 Пример подписки:
@@ -330,8 +360,9 @@ await sio.connect(
 @sio.on("task.built")
 async def on_built(data):
     task_id = data["task_id"]
-    result_file_id = data["payload"]["result_file_id"]
-    print(f"Готово: {task_id} -> {result_file_id}")
+    pptx_id = data["payload"]["result_file_id"]
+    extras = data["payload"].get("extra_files") or {}
+    print(f"Готово: {task_id} -> pptx={pptx_id}, extras={list(extras)}")
 ```
 
 ## Полный сценарий интеграции
@@ -366,6 +397,7 @@ async def run():
             json={
                 "template_file_id": template_file_id,
                 "script_file_id": script_file_id,
+                "formats": ["pptx", "pdf"],
             },
         )
         task_id = task_resp.json()["task_id"]
@@ -379,11 +411,15 @@ async def run():
         async def on_built(data):
             if data["task_id"] != task_id:
                 return
-            file_id = data["payload"]["result_file_id"]
-            result = await http.get(f"/api/files/{file_id}")
+            payload = data["payload"]
+            result = await http.get(f"/api/files/{payload['result_file_id']}")
             with open("result.pptx", "wb") as out:
                 out.write(result.content)
-            print("Файл сохранён")
+            for fmt, file_id in (payload.get("extra_files") or {}).items():
+                resp = await http.get(f"/api/files/{file_id}")
+                with open(f"result.{fmt}", "wb") as out:
+                    out.write(resp.content)
+            print("Файлы сохранены")
             await sio.disconnect()
 
         @sio.on("task.failed")
@@ -407,7 +443,7 @@ asyncio.run(run())
 | `401` | Нет cookie или сессия истекла |
 | `404` | Задача/файл не найдены, либо принадлежат другой сессии |
 | `413` | Файл больше `MAX_UPLOAD_SIZE` |
-| `422` | Невалидное тело запроса (Pydantic) |
+| `422` | Невалидное тело запроса (Pydantic) или неизвестный формат |
 | `502` | file-service вернул ошибку |
 
 ## Восстановление после F5
@@ -415,9 +451,9 @@ asyncio.run(run())
 Фронт при загрузке страницы:
 
 1. `POST /api/session/bootstrap` — получает тот же `sid` из cookie
-2. `GET /api/tasks` — получает список задач с актуальными статусами
+2. `GET /api/tasks` — получает список задач с актуальными статусами, `formats` и `extra_files`
 3. Для активных задач (`queued`, `generating_content`, `building`) — открывает WebSocket и слушает события
-4. Для завершённых (`done`) — показывает кнопку «Открыть» → `GET /api/files/{result_file_id}`
+4. Для завершённых (`done`) — показывает кнопки скачивания по `result_file_id` и `extra_files`
 5. Для упавших (`failed`) — показывает текст ошибки
 
 ## CORS
@@ -429,8 +465,7 @@ Cookie `SameSite=Lax` — работает для same-site и top-level navigat
 ## Ограничения текущей версии
 
 - Пароля/логина нет — только анонимные сессии
-- `task.built` сейчас никто не продюсит: builder-service подключается отдельно, статус может остановиться на `building`
-- Формат результата — только `.pptx`. Экспорт в `.pdf`/`.html` появится позже
+- Форматы `pdf` и `html` реально работают, но только когда клиент их запрашивает в `formats`. Без указания — только `.pptx`
 - Если gateway перезапустится — консьюмер начнёт читать с `auto_offset_reset="latest"` и пропустит события, которые были в момент падения. Задачи в Redis сохранятся, но статус не обновится
 
 ## Полезные команды
@@ -454,7 +489,7 @@ curl -c /tmp/cookies.txt -X POST http://localhost:1000/api/session/bootstrap
 curl -b /tmp/cookies.txt -F "file=@template.pptx" http://localhost:1000/api/files/upload
 curl -b /tmp/cookies.txt -X POST http://localhost:1000/api/tasks \
   -H "Content-Type: application/json" \
-  -d '{"template_file_id": "...", "script_file_id": "..."}'
+  -d '{"template_file_id": "...", "script_file_id": "...", "formats": ["pptx", "pdf"]}'
 curl -b /tmp/cookies.txt http://localhost:1000/api/tasks
 ```
 
@@ -466,9 +501,9 @@ curl -b /tmp/cookies.txt http://localhost:1000/api/tasks
 - Socket.IO клиент (python-socketio)
 - Один `POST /api/session/bootstrap` при старте приложения
 - Два `POST /api/files/upload` для template и script
-- Один `POST /api/tasks` для создания задачи
+- Один `POST /api/tasks` с выбранными форматами
 - Один `GET /api/tasks` для восстановления списка после перезагрузки
 - Один WebSocket на всё приложение, слушает `task.*` и фильтрует по `task_id`
-- Один `GET /api/files/{file_id}` для скачивания результата
+- Один `GET /api/files/{file_id}` для скачивания каждого готового файла (`result_file_id` и значения из `extra_files`)
 
 Никакой авторизации, никаких токенов — всё через cookie, которую браузер шлёт автоматически.

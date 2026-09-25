@@ -19,6 +19,7 @@ class TaskParsedPayload(BaseModel):
     structure_file_id: UUID
     template_file_id: UUID
     script_file_id: UUID
+    formats: list[str] = Field(default_factory=lambda: ["pptx"])
 
 
 class TaskContentReadyPayload(BaseModel):
@@ -28,6 +29,7 @@ class TaskContentReadyPayload(BaseModel):
     content_file_id: UUID
     template_file_id: UUID
     script_file_id: UUID
+    formats: list[str] = Field(default_factory=lambda: ["pptx"])
 
 
 class TaskContentRetryPayload(BaseModel):
@@ -38,6 +40,7 @@ class TaskContentRetryPayload(BaseModel):
     template_file_id: UUID
     feedback_file_id: UUID
     attempt: int = Field(ge=1)
+    formats: list[str] = Field(default_factory=lambda: ["pptx"])
 
 
 class TaskFailedPayload(BaseModel):
