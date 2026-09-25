@@ -150,7 +150,10 @@ async def process_message(
     try:
         payload = await pipeline.process(envelope)
     except Exception as exc:
-        logger.error("Ошибка сборки задачи %s: %s", envelope.task_id, type(exc).__name__)
+        logger.error(
+            "Ошибка сборки задачи %s: %s: %s",
+            envelope.task_id, type(exc).__name__, exc,
+        )
         logger.debug("Детали ошибки builder", exc_info=True)
         reason = "Не удалось собрать или сохранить PPTX"
         topic = settings.kafka_topic_task_failed
