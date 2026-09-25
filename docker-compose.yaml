@@ -146,6 +146,7 @@ services:
       LLM_MAX_TOKENS: ${LLM_MAX_TOKENS}
       LLM_RESPONSE_RETRIES: ${LLM_RESPONSE_RETRIES}
       LOG_LEVEL: ${LOG_LEVEL}
+      LLM_STUB_MODE: ${LLM_STUB_MODE:-false}
     depends_on:
       kafka:
         condition: service_healthy

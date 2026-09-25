@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     llm_max_tokens: int = Field(default=8192, gt=0)
     llm_response_retries: int = Field(default=2, ge=0, le=5)
     content_validation_retries: int = Field(default=2, ge=0, le=5)
+    llm_stub_mode: bool = False
 
     kafka_bootstrap_servers: str = "kafka:9092"
     kafka_group_id: str = "content-service"
