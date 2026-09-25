@@ -1,6 +1,6 @@
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 TaskStatus = Literal[
@@ -22,6 +22,8 @@ class TaskInfo(BaseModel):
     content_file_id: Optional[str] = None
     result_file_id: Optional[str] = None
     error: Optional[str] = None
+    formats: list[str] = Field(default_factory=lambda: ["pptx"])
+    extra_files: dict[str, str] = Field(default_factory=dict)
     created_at: float
     updated_at: float
 
@@ -35,6 +37,7 @@ class CreateTaskRequest(BaseModel):
     """Запрос на создание задачи"""
     template_file_id: str
     script_file_id: str
+    formats: list[str] = Field(default_factory=lambda: ["pptx"])
 
 
 class CreateTaskResponse(BaseModel):
