@@ -13,6 +13,7 @@ from typing import Any
 from uuid import UUID
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from aiokafka.structs import TopicPartition
 from app.builder import PPTXBuilder
 from app.models.content import GeneratedContent
 from app.models.presentation import Presentation
@@ -130,7 +131,9 @@ async def process_message(
 async def consume(consumer: Any, pipeline: BuilderPipeline, producer: Any, settings: Settings) -> None:
     async for message in consumer:
         await process_message(message.value, pipeline, producer, settings)
-        await consumer.commit()
+        await consumer.commit({
+            TopicPartition(message.topic, message.partition): message.offset + 1,
+        })
 
 
 async def serve(settings: Settings | None = None, stop_event: asyncio.Event | None = None) -> None:

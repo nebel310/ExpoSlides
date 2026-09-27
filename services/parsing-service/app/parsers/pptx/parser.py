@@ -65,9 +65,15 @@ class PPTXParser(BaseParser):
         layouts: list[LayoutInfo] = []
         layout_indices_by_partname: dict[str, int] = {}
         layout_kind_signatures: dict[int, list] = {}
-        for idx, layout in enumerate(prs.slide_layouts, start=1):
+        master_indices = {
+            str(master.part.partname): idx
+            for idx, master in enumerate(prs.slide_masters, start=1)
+        }
+        for idx, layout in enumerate(tokens_module.iter_layouts(prs), start=1):
             layout_indices_by_partname[str(layout.part.partname)] = idx
-            parsed = cls._parse_layout(layout, idx, theme, assets)
+            layout_theme = tokens_module.extract_theme(layout) or theme
+            parsed = cls._parse_layout(layout, idx, layout_theme, assets)
+            parsed.master_index = master_indices[str(layout.slide_master.part.partname)]
             layouts.append(parsed)
             layout_kind_signatures[idx] = [
                 ph.kind for ph in parsed.placeholders if ph.kind
@@ -77,20 +83,25 @@ class PPTXParser(BaseParser):
             prs, layout_indices_by_partname
         )
 
-        masters = tokens_module.extract_masters(prs, layout_indices_by_partname)
+        masters = tokens_module.extract_masters(prs, layout_indices_by_partname, assets)
         patterns = tokens_module.compute_patterns(layouts, layout_kind_signatures)
         pattern_by_layout = tokens_module.map_layouts_to_patterns(layouts, patterns)
+        for layout in layouts:
+            layout.pattern_id = pattern_by_layout.get(layout.index)
 
         slides: list[Slide] = []
         for idx, slide in enumerate(prs.slides, start=1):
             parsed_slide = cls._parse_slide(
                 slide,
                 idx,
-                theme,
+                tokens_module.extract_theme(slide) or theme,
                 layout_indices_by_partname,
                 pattern_by_layout,
                 assets,
             )
+            parsed_slide.master_index = master_indices[
+                str(slide.slide_layout.slide_master.part.partname)
+            ]
             cls._apply_layout_sizes(parsed_slide, layout_size_map)
             cls._mark_hidden_and_background(
                 parsed_slide, prs.slide_width, prs.slide_height
@@ -164,6 +175,7 @@ class PPTXParser(BaseParser):
 
         return Slide(
             index=index,
+            theme=theme,
             layout_type=classify_layout(slide),
             layout_name=slide.slide_layout.name if slide.slide_layout else None,
             layout_index=layout_index,
@@ -211,8 +223,14 @@ class PPTXParser(BaseParser):
         """Помечает элементы, скрытые за пределами слайда, и фоновые картинки"""
         slide_area = slide_width * slide_height
 
-        for element in slide.elements:
-            bb = element.bbox
+        def walk(elements):
+            for element in elements:
+                yield element
+                if element.group:
+                    yield from walk(element.group.children)
+
+        for element in walk(slide.elements):
+            bb = element.slide_bbox or element.bbox
             if (
                 bb.left + bb.width < 0
                 or bb.top + bb.height < 0
@@ -258,10 +276,16 @@ class PPTXParser(BaseParser):
         theme,
         assets: dict[str, AssetBlob],
     ) -> LayoutInfo:
-        """Извлекает макет: placeholder'ы и фон, без полного дерева элементов"""
+        """Извлекает макет с полным деревом фигур и текстовых областей."""
         placeholders: list[PlaceholderInfo] = []
+        elements: list[SlideElement] = []
 
         for shape in layout.shapes:
+            element = shapes_module.parse_shape(
+                shape, theme, f"layout-{index}-shape-{shape.shape_id}", assets, owner=layout,
+            )
+            if element is not None:
+                elements.append(element)
             if not shape.is_placeholder:
                 continue
             try:
@@ -291,6 +315,8 @@ class PPTXParser(BaseParser):
         return LayoutInfo(
             name=layout.name,
             index=index,
+            theme=theme,
+            elements=elements,
             layout_type=classify_layout_by_name((layout.name or "").lower()),
             placeholders=placeholders,
             background=background,

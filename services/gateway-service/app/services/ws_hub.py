@@ -5,9 +5,9 @@ from app.services.sio_server import sio
 logger = logging.getLogger(__name__)
 
 
-def join_session_room(socket_id: str, session_id: str) -> None:
+async def join_session_room(socket_id: str, session_id: str) -> None:
     """Добавляет сокет в комнату сессии"""
-    sio.enter_room(socket_id, session_id)
+    await sio.enter_room(socket_id, session_id)
     logger.info("Socket %s присоединён к комнате %s", socket_id, session_id)
 
 

@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import pytest
+from app.models.presentation import ChartType
+from app.parsers.pptx import charts as charts_module
 from pptx import Presentation as PPTXPresentation
 from pptx.chart.data import CategoryChartData
 from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 from pptx.util import Emu
-
-from app.models.presentation import ChartType
-from app.parsers.pptx import charts as charts_module
 
 
 def _make_bar_chart(prs):

@@ -1,10 +1,9 @@
 import logging
 from typing import Any
 
-import grpc
-
 import file_service_pb2
 import file_service_pb2_grpc
+import grpc
 from app.config import settings
 from app.errors import FileServiceError
 
@@ -62,7 +61,7 @@ class FileServiceClient:
             task_id=task_id,
         )
         try:
-            response = await stub.UploadFile(request)
+            response = await stub.UploadFile(request, timeout=settings.file_service_timeout)
         except grpc.aio.AioRpcError as error:
             raise FileServiceError(f"UploadFile failed: {error.code().name}") from error
         return {
@@ -82,7 +81,7 @@ class FileServiceClient:
         stub = self._require_stub()
         request = file_service_pb2.DownloadFileRequest(file_id=file_id, version=version)
         try:
-            response = await stub.DownloadFile(request)
+            response = await stub.DownloadFile(request, timeout=settings.file_service_timeout)
         except grpc.aio.AioRpcError as error:
             raise FileServiceError(f"DownloadFile failed: {error.code().name}") from error
         return response.content, response.filename, response.content_type, response.version

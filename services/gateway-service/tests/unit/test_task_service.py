@@ -1,7 +1,6 @@
 from unittest.mock import AsyncMock
 
 import pytest
-
 from app.errors import TaskNotFoundError
 from app.repositories.sessions import SessionRepository
 from app.repositories.tasks import TaskRepository

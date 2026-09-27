@@ -1,10 +1,7 @@
-import os
 import json
+import os
 import zipfile
 from io import BytesIO
-
-
-
 
 ZIP_MAGIC_BYTES = b"PK\x03\x04"
 PDF_MAGIC_BYTES = b"%PDF"

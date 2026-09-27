@@ -12,7 +12,7 @@ from app.models.presentation import (
     ThemeInfo,
 )
 from app.parsers.pptx.helpers import theme_color_to_token
-from app.parsers.text_style import inherited_font
+from app.parsers.text_style import inherited_font, inherited_run_properties
 
 from pptx.enum.dml import MSO_COLOR_TYPE
 from pptx.enum.text import PP_ALIGN
@@ -37,15 +37,18 @@ def parse_text_frame(
     for para in text_frame.paragraphs:
         inherited_size = None
         inherited_name = None
+        inherited_properties = ()
         if shape is not None and owner is not None:
             inherited_size, inherited_name = inherited_font(shape, para, owner)
+            inherited_properties = tuple(inherited_run_properties(shape, para, owner))
         runs: list[Run] = []
         for run in para.runs:
             runs.append(
                 Run(
                     text=run.text,
                     style=extract_style(
-                        run.font, para, placeholder_kind, theme, inherited_size, inherited_name
+                        run.font, para, placeholder_kind, theme, inherited_size, inherited_name,
+                        inherited_properties,
                     ),
                     hyperlink=extract_hyperlink(run),
                 )
@@ -100,10 +103,27 @@ def extract_style(
     theme: ThemeInfo | None,
     inherited_size: float | None = None,
     inherited_name: str | None = None,
+    inherited_properties: tuple = (),
 ) -> TextStyle:
     """Извлекает стиль текста с учётом темы и токенов"""
     font_name, _ = resolve_font(font, placeholder_kind, theme, inherited_name)
     color_hex, color_token = resolve_color(font, theme)
+    inherited_flags = {}
+    for properties in inherited_properties:
+        for key in ("b", "i", "u"):
+            if key not in inherited_flags and properties.get(key) is not None:
+                inherited_flags[key] = properties.get(key)
+        if color_hex is None:
+            fill = properties.find(qn("a:solidFill"))
+            if fill is not None:
+                rgb = fill.find(qn("a:srgbClr"))
+                scheme = fill.find(qn("a:schemeClr"))
+                if rgb is not None:
+                    color_hex = rgb.get("val")
+                elif scheme is not None:
+                    color_token = scheme.get("val")
+                    color_token = {"tx1": "dk1", "tx2": "dk2", "bg1": "lt1", "bg2": "lt2"}.get(color_token, color_token)
+                    color_hex = theme.colors.get(color_token) if theme else None
 
     size_pt = font.size.pt if font.size else inherited_size
 
@@ -122,9 +142,9 @@ def extract_style(
     return TextStyle(
         font_name=font_name,
         size_pt=size_pt,
-        bold=bool(font.bold),
-        italic=bool(font.italic),
-        underline=bool(font.underline),
+        bold=bool(font.bold) if font.bold is not None else inherited_flags.get("b") in {"1", "true"},
+        italic=bool(font.italic) if font.italic is not None else inherited_flags.get("i") in {"1", "true"},
+        underline=bool(font.underline) if font.underline is not None else inherited_flags.get("u", "none") != "none",
         color_hex=color_hex,
         color_token=color_token,
         alignment=alignment,
@@ -180,3 +200,11 @@ def resolve_color(
     except Exception:
         logger.debug("Не удалось извлечь цвет текста", exc_info=True)
     return None, None
+
+
+def default_style(shape, theme, placeholder_kind, owner=None) -> TextStyle:
+    """Сохраняет наследуемую типографику даже пустого текстового placeholder."""
+    paragraph = shape.text_frame.paragraphs[0]
+    size, name = (inherited_font(shape, paragraph, owner) if owner is not None else (None, None))
+    properties = tuple(inherited_run_properties(shape, paragraph, owner)) if owner is not None else ()
+    return extract_style(paragraph.font, paragraph, placeholder_kind, theme, size, name, properties)

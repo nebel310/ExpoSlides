@@ -1,0 +1,30 @@
+schema_version = "1.0"
+id = "designer"
+version = "1.0.0"
+description = "Один проверенный план содержания, три варианта верстки, отдельный аудит."
+
+[roles.story]
+model = "qwen_3_8_27b"
+task = "text"
+prompt = "prompts/designer/story.md"
+attempts = 3
+timeout_seconds = 180
+
+[roles.contextual_auditor]
+model = "qwen_3_8_27b"
+task = "image-to-text"
+prompt = "prompts/designer/audit.md"
+attempts = 2
+timeout_seconds = 120
+concurrency = 3
+enabled_default = false
+
+[roles.image_illustrator]
+model = "flux_1_schnell"
+task = "text-to-image"
+prompt = "prompts/designer/image.md"
+attempts = 1
+timeout_seconds = 90
+enabled_default = false
+inference_steps = 4
+guidance_scale = 0.0

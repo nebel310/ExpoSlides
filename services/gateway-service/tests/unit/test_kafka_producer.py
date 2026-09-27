@@ -1,7 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from app.services.kafka_producer import GatewayKafkaProducer
 
 

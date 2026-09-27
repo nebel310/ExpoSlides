@@ -8,6 +8,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 PDF_EXPORT = (
@@ -19,7 +20,7 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 class PreviewRenderer:
     """Один фоновый рендерер; запуск очереди контролирует веб-приложение."""
 
-    def __init__(self, timeout: float = 90) -> None:
+    def __init__(self, timeout: float = 90, *, deadline: float | None = None) -> None:
         self.soffice = shutil.which("soffice") or shutil.which("libreoffice")
         if self.soffice is None:
             mac_app = Path("/Applications/LibreOffice.app/Contents/MacOS/soffice")
@@ -27,6 +28,7 @@ class PreviewRenderer:
                 self.soffice = str(mac_app)
         self.pdftoppm = shutil.which("pdftoppm")
         self.timeout = timeout
+        self.deadline = deadline
         self._lock = threading.Lock()
         self._closed = False
         self._process: subprocess.Popen[bytes] | None = None
@@ -35,7 +37,9 @@ class PreviewRenderer:
     def available(self) -> bool:
         return self.soffice is not None and self.pdftoppm is not None
 
-    def render(self, source: Path, output_dir: Path, slide_count: int) -> list[Path]:
+    def render(
+        self, source: Path, output_dir: Path, slide_count: int, *, pdf_output: Path | None = None,
+    ) -> list[Path]:
         """Вернуть кадры всех слайдов, включая скрытые, в исходном порядке."""
         soffice, pdftoppm = self.soffice, self.pdftoppm
         if soffice is None or pdftoppm is None:
@@ -64,6 +68,9 @@ class PreviewRenderer:
             pdf = work / f"{source.stem}.pdf"
             if not pdf.is_file() or pdf.stat().st_size == 0:
                 raise RuntimeError("Не удалось создать предпросмотр презентации.")
+            if pdf_output is not None:
+                pdf_output.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(pdf, pdf_output)
             self._run(
                 [pdftoppm, "-png", "-scale-to", "1400", str(pdf), str(work / "slide")],
                 environment,
@@ -98,7 +105,10 @@ class PreviewRenderer:
             self._process = process
         try:
             try:
-                process.wait(timeout=self.timeout)
+                remaining = self.timeout if self.deadline is None else min(
+                    self.timeout, max(0, self.deadline-time.monotonic()),
+                )
+                process.wait(timeout=remaining)
             except subprocess.TimeoutExpired as error:
                 self._kill(process)
                 raise RuntimeError("Превышено время создания предпросмотра.") from error

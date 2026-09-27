@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
-from pptx import Presentation as PPTXPresentation
-
 from app.kafka.schemas import TaskCreatedPayload
 from app.services.parser_pipeline import (
     STRUCTURE_CONTENT_TYPE,
     STRUCTURE_FILENAME,
     ParserPipeline,
 )
+from pptx import Presentation as PPTXPresentation
 
 
 def _make_pptx_bytes() -> bytes:
@@ -89,6 +87,7 @@ async def test_pipeline_invalid_pptx_bytes_raises(fake_file_client) -> None:
 @pytest.mark.asyncio
 async def test_pipeline_uploads_assets(fake_file_client, tmp_path: Path) -> None:
     import io
+
     from pptx.util import Emu
 
     png = (

@@ -6,7 +6,6 @@ from pathlib import Path
 from pptx import Presentation as PPTXPresentation
 from pptx.util import Emu
 
-
 PNG_1X1 = (
     b"\x89PNG\r\n\x1a\n"
     b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -65,7 +64,7 @@ def make_pptx_with_bullets(bullets: int = 3) -> bytes:
     slide = prs.slides.add_slide(prs.slide_layouts[1])
     slide.shapes.title.text = "Bullets"
     body = slide.placeholders[1].text_frame
-    body.text = f"Bullet 1"
+    body.text = "Bullet 1"
     for i in range(2, bullets + 1):
         p = body.add_paragraph()
         p.text = f"Bullet {i}"

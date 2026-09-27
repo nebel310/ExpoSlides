@@ -5,8 +5,6 @@ import json
 import logging
 
 from aiokafka import AIOKafkaConsumer
-from pydantic import ValidationError
-
 from app.kafka.producer import KafkaProducer
 from app.kafka.schemas import (
     MessageEnvelope,
@@ -14,6 +12,7 @@ from app.kafka.schemas import (
     TaskFailedPayload,
 )
 from app.services.parser_pipeline import ParserPipeline
+from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
 

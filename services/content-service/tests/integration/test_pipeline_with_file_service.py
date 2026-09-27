@@ -4,13 +4,11 @@ from uuid import uuid4
 
 import pytest
 from aiokafka import AIOKafkaConsumer
-
 from app.domain.contract import ContentGenerationResult
 from app.errors import ContentValidationError
 from app.kafka.consumer import KafkaConsumer
 from app.kafka.producer import KafkaProducer
 from app.services.content_pipeline import ContentPipeline
-
 from helpers import (
     KAFKA_BOOTSTRAP,
     PIPELINE_TIMEOUT,

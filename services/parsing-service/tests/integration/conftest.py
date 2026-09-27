@@ -3,15 +3,12 @@ from __future__ import annotations
 import os
 from typing import AsyncIterator, Awaitable, Callable
 
+import file_service_pb2_grpc
 import grpc
 import pytest
 import pytest_asyncio
-from google.protobuf import empty_pb2
-
-import file_service_pb2_grpc
-
 from app.grpc.file_service_client import FileServiceClient
-
+from google.protobuf import empty_pb2
 
 FILE_SERVICE_HOST = os.environ.get("FILE_SERVICE_GRPC_HOST", "localhost")
 FILE_SERVICE_PORT = int(os.environ.get("FILE_SERVICE_GRPC_PORT", "50051"))

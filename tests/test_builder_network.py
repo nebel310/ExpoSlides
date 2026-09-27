@@ -139,10 +139,16 @@ def test_worker_commits_only_after_acknowledged_output(service_importer, publish
     class Consumer:
         def __aiter__(self):
             async def messages():
-                yield SimpleNamespace(value=json.dumps(envelope).encode())
+                yield SimpleNamespace(
+                    value=json.dumps(envelope).encode(), topic="task.content_ready",
+                    partition=2, offset=17,
+                )
             return messages()
 
-        async def commit(self):
+        async def commit(self, offsets):
+            from aiokafka.structs import TopicPartition
+
+            assert offsets == {TopicPartition("task.content_ready", 2): 18}
             order.append("commit")
 
     async def publish(*args, **kwargs):

@@ -2,22 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
 from uuid import uuid4
 
+import file_service_pb2_grpc
 import grpc
+import parser_service_pb2_grpc
 import pytest
 import pytest_asyncio
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient
-from google.protobuf import empty_pb2
-
-import file_service_pb2_grpc
-import parser_service_pb2_grpc
-
 from app.grpc.file_service_client import FileServiceClient
-
+from google.protobuf import empty_pb2
 
 # ---------- Env ----------
 

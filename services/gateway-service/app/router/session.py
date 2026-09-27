@@ -1,11 +1,9 @@
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-
 from app.database import get_redis
 from app.repositories.sessions import SessionRepository
 from app.schemas.session import SessionBootstrapResponse
 from app.utils.cookies import get_sid_from_request, new_sid, set_sid_cookie
-
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 router = APIRouter(prefix="/api/session", tags=["session"])
 

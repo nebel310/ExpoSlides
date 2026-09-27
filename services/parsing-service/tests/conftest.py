@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
 
 import pytest
+from app.parsers.pptx.assets import AssetBlob
 from pptx import Presentation as PPTXPresentation
 from pptx.util import Emu
-
-from app.parsers.pptx.assets import AssetBlob
-
 
 # ---------- Генераторы pptx-файлов ----------
 

@@ -6,17 +6,13 @@ import uuid
 
 import grpc
 import pytest
-from pptx import Presentation
-
 from file_service_pb2 import (
     DeleteFileRequest,
     DownloadFileRequest,
     GetFileInfoRequest,
     UploadFileRequest,
 )
-
-
-
+from pptx import Presentation
 
 # ---------------------------------------------------------------------------
 # Генераторы валидных файлов: исходные типы
@@ -602,7 +598,7 @@ def test_upload_and_get_file_info(file_service_stub):
         assert info.size == len(content)
         assert info.task_id == task_id
         assert info.version == 1
-        assert f"/v1.pptx" in info.object_key
+        assert "/v1.pptx" in info.object_key
     finally:
         file_service_stub.DeleteFile(DeleteFileRequest(file_id=file_id))
 

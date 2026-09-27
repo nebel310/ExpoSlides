@@ -1,6 +1,4 @@
 import pytest
-from pydantic import ValidationError
-
 from app.schemas.files import UploadFileResponse
 from app.schemas.session import SessionBootstrapResponse
 from app.schemas.task import (
@@ -9,6 +7,7 @@ from app.schemas.task import (
     TaskInfo,
     TaskListResponse,
 )
+from pydantic import ValidationError
 
 
 def test_session_bootstrap_schema():

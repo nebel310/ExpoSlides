@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
-
 from app.kafka.schemas import (
     MessageEnvelope,
     TaskCreatedPayload,
     TaskFailedPayload,
     TaskParsedPayload,
 )
+from pydantic import ValidationError
 
 
 def test_message_envelope_minimal() -> None:

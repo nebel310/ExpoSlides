@@ -3,18 +3,16 @@ import logging
 from contextlib import asynccontextmanager
 
 import socketio
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
 from app.config import settings
 from app.database import close_redis
 from app.router import files, session, tasks
-from app.router import ws as ws_module
+from app.router import ws as ws_module  # noqa: F401 — регистрация Socket.IO обработчиков
 from app.services.file_client import file_client
 from app.services.kafka_consumer import kafka_consumer
 from app.services.kafka_producer import kafka_producer
 from app.services.sio_server import sio
-
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -46,7 +44,7 @@ async def lifespan(app: FastAPI):
 fastapi_app = FastAPI(title="ExpoSlides Gateway", lifespan=lifespan)
 fastapi_app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

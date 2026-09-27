@@ -3,9 +3,8 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from google.protobuf import empty_pb2
-
 from app.grpc.server import GrpcServer, ParserServiceServicer
+from google.protobuf import empty_pb2
 
 
 @pytest.mark.asyncio

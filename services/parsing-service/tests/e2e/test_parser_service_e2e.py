@@ -6,9 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-import pytest_asyncio
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
-
 from app.kafka.schemas import MessageEnvelope
 from app.models.presentation import Presentation
 from tests.e2e.conftest import (
@@ -23,7 +21,6 @@ from tests.e2e.helpers import (
     make_pptx_with_table,
     make_simple_pptx,
 )
-
 
 pytestmark = pytest.mark.e2e
 

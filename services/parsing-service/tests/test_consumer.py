@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from app.kafka.consumer import STAGE, TaskCreatedConsumer
 from app.kafka.schemas import (
     MessageEnvelope,

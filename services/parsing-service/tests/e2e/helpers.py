@@ -6,7 +6,6 @@ from pathlib import Path
 from pptx import Presentation as PPTXPresentation
 from pptx.util import Emu
 
-
 PNG_1X1 = (
     b"\x89PNG\r\n\x1a\n"
     b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"

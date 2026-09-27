@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import pytest
+from app.parsers.pptx import tables as tables_module
 from pptx import Presentation as PPTXPresentation
 from pptx.util import Emu
-
-from app.parsers.pptx import tables as tables_module
 
 
 def _make_table(prs, rows: int, cols: int):

@@ -1,10 +1,8 @@
-import pytest
-import pytest_asyncio
 import fakeredis.aioredis
-from httpx import ASGITransport, AsyncClient
-
+import pytest_asyncio
 from app.database import get_redis
 from app.main import fastapi_app
+from httpx import ASGITransport, AsyncClient
 
 
 @pytest_asyncio.fixture

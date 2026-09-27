@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -20,8 +20,8 @@ services:
     image: quay.io/minio/minio:latest
     container_name: minio
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
@@ -38,7 +38,10 @@ services:
     image: redis:7-alpine
     container_name: gateway-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -51,7 +54,7 @@ services:
       dockerfile: services/file-service/Dockerfile
     container_name: file-service
     ports:
-      - "${FILE_SERVICE_PORT}:50051"
+      - "127.0.0.1:${FILE_SERVICE_PORT:-50051}:50051"
     environment:
       MINIO_ENDPOINT: ${MINIO_ENDPOINT}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
@@ -69,8 +72,7 @@ services:
     image: apache/kafka:4.0.0
     container_name: kafka
     ports:
-      - "9092:9092"
-      - "9093:9093"
+      - "127.0.0.1:9093:9093"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -104,7 +106,7 @@ services:
       dockerfile: services/parsing-service/Dockerfile
     container_name: parser-service
     ports:
-      - "${PARSER_SERVICE_PORT}:50052"
+      - "127.0.0.1:${PARSER_SERVICE_PORT:-50052}:50052"
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_GROUP_ID: parser-service
@@ -126,7 +128,7 @@ services:
       dockerfile: services/content-service/Dockerfile
     container_name: content-service
     ports:
-      - "${CONTENT_SERVICE_PORT}:50053"
+      - "127.0.0.1:${CONTENT_SERVICE_PORT:-50053}:50053"
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_GROUP_ID: content-service
@@ -178,10 +180,13 @@ services:
       context: .
       dockerfile: services/gateway-service/Dockerfile
     container_name: gateway-service
+    restart: unless-stopped
     ports:
-      - "${GATEWAY_SERVICE_PORT:-1000}:1000"
+      - "127.0.0.1:${GATEWAY_SERVICE_PORT:-1000}:1000"
     environment:
       REDIS_URL: redis://redis:6379/0
+      ALLOWED_ORIGINS: ${GATEWAY_ALLOWED_ORIGINS:-[]}
+      COOKIE_SECURE: ${GATEWAY_COOKIE_SECURE:-false}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_GROUP_ID: gateway-service
       KAFKA_TOPIC_TASK_CREATED: task.created
@@ -206,3 +211,4 @@ volumes:
   minio_data:
   postgres_data:
   kafka_data:
+  redis_data:

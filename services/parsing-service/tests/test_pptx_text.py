@@ -3,14 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from app.models.presentation import Alignment, PlaceholderKind
+from app.parsers.pptx import text as text_module
 from pptx import Presentation as PPTXPresentation
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Emu, Pt
-
-from app.models.presentation import Alignment, PlaceholderKind
-from app.parsers.pptx import text as text_module
-
 
 # ---------- Базовые валидные случаи ----------
 

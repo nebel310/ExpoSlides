@@ -5,7 +5,6 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-
 SCHEMA_VERSION = "2.0.0"
 
 
@@ -261,6 +260,12 @@ class OleElement(BaseModel):
 
 class SlideElement(BaseModel):
     id: str
+    shape_id: Optional[int] = None
+    shape_name: Optional[str] = None
+    shape_path: list[int] = Field(default_factory=list)
+    has_text_frame: bool = False
+    default_text_style: Optional[TextStyle] = None
+    slide_bbox: Optional[BBox] = None
     type: ElementType
     bbox: BBox
     z_order: Optional[int] = None
@@ -325,6 +330,7 @@ class DesignTokens(BaseModel):
 
 
 class SlotSignature(BaseModel):
+    element_id: Optional[str] = None
     kind: PlaceholderKind = PlaceholderKind.OTHER
     bbox: BBox
     idx: Optional[int] = None
@@ -351,6 +357,8 @@ class Component(BaseModel):
 
 class MasterInfo(BaseModel):
     index: int
+    elements: list[SlideElement] = Field(default_factory=list)
+    theme: Optional[ThemeInfo] = None
     name: Optional[str] = None
     layout_indices: list[int] = Field(default_factory=list)
 
@@ -364,6 +372,8 @@ class PlaceholderInfo(BaseModel):
 
 class Slide(BaseModel):
     index: int
+    master_index: Optional[int] = None
+    theme: Optional[ThemeInfo] = None
     layout_type: LayoutType = LayoutType.UNKNOWN
     layout_name: Optional[str] = None
     layout_index: Optional[int] = None
@@ -377,6 +387,9 @@ class Slide(BaseModel):
 class LayoutInfo(BaseModel):
     name: str
     index: int
+    master_index: Optional[int] = None
+    theme: Optional[ThemeInfo] = None
+    elements: list[SlideElement] = Field(default_factory=list)
     layout_type: LayoutType = LayoutType.UNKNOWN
     pattern_id: Optional[str] = None
     placeholders: list[PlaceholderInfo] = Field(default_factory=list)

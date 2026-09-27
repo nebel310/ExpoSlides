@@ -57,3 +57,74 @@ def test_eval_scorer_separates_grounded_and_incorrect_outputs() -> None:
     assert grounded_score["fact_recall"] == 1.0
     assert incorrect_score["score"] < grounded_score["score"]
     assert incorrect_score["forbidden_hits"]
+
+
+def test_fifteen_slide_eval_rejects_one_slide_with_only_four_fact_tokens() -> None:
+    scorer = runpy.run_path(str(EVAL_ROOT / "score.py"))
+    case = next(case for case in _load_cases() if case["id"] == "fast-product-review-15")
+    response = {"content": {"1": {"placeholders": {"0": "2026; 42 млн рублей; 18%; 27%"}}}}
+    result = scorer["score_response"](case, response)
+    assert result["fact_recall"] == 1.0
+    assert not result["slide_count_ok"]
+    assert result["missing_messages"]
+    assert result["score"] < 100
+
+
+def test_fifteen_slide_eval_rejects_duplicate_padding() -> None:
+    scorer = runpy.run_path(str(EVAL_ROOT / "score.py"))
+    case = next(case for case in _load_cases() if case["id"] == "fast-product-review-15")
+    response = {"content": {
+        str(index): {"placeholders": {"0": case["script"]}}
+        for index in range(1, 16)
+    }}
+    result = scorer["score_response"](case, response)
+    assert result["slide_count_ok"]
+    assert result["duplicate_slides"] == 14
+    assert result["score"] < 100
+
+
+def test_scorer_rejects_swapped_metric_bindings_even_if_tokens_survive() -> None:
+    scorer = runpy.run_path(str(EVAL_ROOT / "score.py"))
+    case = {
+        "id": "metric-binding",
+        "script": "Выручка составила 10 млн рублей, прибыль составила 2 млн рублей.",
+        "must_preserve": ["10 млн рублей", "2 млн рублей"],
+        "forbidden_claims": [], "settings": {"max_slides": 3},
+    }
+    response = {"content": {"1": {"placeholders": {
+        "0": "Выручка составила 2 млн рублей, прибыль составила 10 млн рублей.",
+    }}}}
+    result = scorer["score_response"](case, response)
+    assert result["fact_recall"] == 1.0
+    assert result["semantic_issues"]
+    assert result["score"] < 100
+
+
+def test_scorer_rejects_explicitly_invalid_output() -> None:
+    scorer = runpy.run_path(str(EVAL_ROOT / "score.py"))
+    case = _load_cases()[0]
+    response = {
+        "content": {"1": {"placeholders": {"0": case["script"]}}},
+        "validation_report": {"ok": False, "issues": ["Неверный контент"]},
+    }
+    result = scorer["score_response"](case, response)
+    assert not result["output_valid"]
+    assert result["score"] == 0
+
+
+def test_scorer_handles_malformed_content_without_crashing() -> None:
+    scorer = runpy.run_path(str(EVAL_ROOT / "score.py"))
+    case = _load_cases()[0]
+    for response in ({"content": []}, {"content": {"1": None}}, {"content": {}}):
+        result = scorer["score_response"](case, response)
+        assert result["score"] == 0
+        assert not result["output_valid"]
+
+
+def test_target_count_is_not_inferred_from_maximum() -> None:
+    scorer = runpy.run_path(str(EVAL_ROOT / "score.py"))
+    case = _load_cases()[0]
+    response = {"content": {"1": {"placeholders": {"0": case["script"]}}}}
+    result = scorer["score_response"](case, response)
+    assert result["slide_count_ok"]
+    assert result["score"] == 100

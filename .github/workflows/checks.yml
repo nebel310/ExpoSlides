@@ -1,0 +1,50 @@
+name: Offline checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+      - name: Install locked environment
+        run: uv sync --locked --python '${{ matrix.python }}'
+      - name: Check dependency lock
+        run: uv lock --check
+      - name: Lint
+        run: uv run --no-sync ruff check .
+      - name: Root offline tests
+        run: uv run --no-sync pytest
+      - name: Isolated service offline tests
+        run: uv run --no-sync python scripts/test_services.py
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Require current bundled assets
+        run: git diff --exit-code -- ../exposlides/studio_static

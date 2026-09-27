@@ -4,7 +4,6 @@ import uuid
 from typing import Any
 
 import redis.asyncio as aioredis
-
 from app.config import settings
 from app.errors import TaskNotFoundError
 from app.repositories.sessions import SessionRepository
@@ -32,6 +31,7 @@ class TaskService:
             "task_id": task_id,
             "sid": sid,
             "status": "queued",
+            "attempt": 1,
             "template_file_id": template_file_id,
             "script_file_id": script_file_id,
             "structure_file_id": None,

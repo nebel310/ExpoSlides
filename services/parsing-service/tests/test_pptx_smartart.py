@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import pytest
-from lxml import etree
-
 from app.parsers.pptx import smartart as smartart_module
-
+from lxml import etree
 
 DGM_NS = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"

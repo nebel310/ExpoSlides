@@ -3,17 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from pptx import Presentation as PPTXPresentation
-from pptx.dml.color import RGBColor
-from pptx.enum.shapes import MSO_SHAPE
-from pptx.util import Emu, Pt
-
 from app.models.presentation import (
     BackgroundKind,
     ElementType,
     FillType,
 )
 from app.parsers.pptx import shapes as shapes_module
+from pptx import Presentation as PPTXPresentation
+from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.util import Emu, Pt
 
 
 def _new_prs() -> PPTXPresentation:

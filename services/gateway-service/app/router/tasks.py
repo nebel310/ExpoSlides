@@ -1,8 +1,7 @@
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends, HTTPException, Request
-
 from app.database import get_redis
 from app.errors import TaskNotFoundError
+from app.repositories.files import FileRepository
 from app.repositories.sessions import SessionRepository
 from app.schemas.task import (
     CreateTaskRequest,
@@ -12,7 +11,7 @@ from app.schemas.task import (
 )
 from app.services.task_service import task_service
 from app.utils.cookies import get_sid_from_request
-
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -34,6 +33,9 @@ async def create_task(
 ) -> CreateTaskResponse:
     """Создаёт задачу на генерацию презентации"""
     sid = await _require_sid(request, redis)
+    for file_id in (body.template_file_id, body.script_file_id):
+        if not await FileRepository.owns(redis, sid, file_id):
+            raise HTTPException(status_code=404, detail="Файл не найден")
     task = await task_service.create_task(
         redis=redis,
         sid=sid,

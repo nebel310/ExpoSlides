@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock
 
 from app.errors import FileServiceError
+from app.repositories.files import FileRepository
 from app.services import file_client as fc_module
 
 
@@ -66,11 +67,12 @@ async def test_upload_file_service_error(client, monkeypatch):
     assert response.status_code == 502
 
 
-async def test_download_ok(client, monkeypatch):
+async def test_download_ok(client, redis, monkeypatch):
     """Проверяет скачивание"""
     download = AsyncMock(return_value=(b"payload", "r.pptx", "application/x", 1))
     monkeypatch.setattr(fc_module.file_client, "download_file", download)
     sid = await _bootstrap(client)
+    await FileRepository.grant(redis, sid, "f1")
     response = await client.get(
         "/api/files/f1",
         cookies={"exposlides_sid": sid},
@@ -80,11 +82,12 @@ async def test_download_ok(client, monkeypatch):
     assert "r.pptx" in response.headers["content-disposition"]
 
 
-async def test_download_not_found(client, monkeypatch):
+async def test_download_not_found(client, redis, monkeypatch):
     """Проверяет ошибку скачивания"""
     download = AsyncMock(side_effect=FileServiceError("nope"))
     monkeypatch.setattr(fc_module.file_client, "download_file", download)
     sid = await _bootstrap(client)
+    await FileRepository.grant(redis, sid, "missing")
     response = await client.get(
         "/api/files/missing",
         cookies={"exposlides_sid": sid},

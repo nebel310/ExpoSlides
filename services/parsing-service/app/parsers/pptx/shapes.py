@@ -23,6 +23,7 @@ from app.parsers.pptx import charts as charts_module
 from app.parsers.pptx import smartart as smartart_module
 from app.parsers.pptx import tables as tables_module
 from app.parsers.pptx import text as text_module
+from app.parsers.pptx.geometry import IDENTITY, Affine, group_transform, slide_bbox
 from app.parsers.pptx.helpers import (
     get_rotation,
     get_z_order,
@@ -47,6 +48,9 @@ def parse_shape(
     element_id: str,
     assets: dict,
     owner: Slide | SlideLayout | None = None,
+    *,
+    transform: Affine = IDENTITY,
+    shape_path: tuple[int, ...] = (),
 ) -> SlideElement | None:
     """Определяет тип фигуры и делегирует парсинг нужному методу"""
     bbox = BBox(
@@ -70,8 +74,16 @@ def parse_shape(
     line = parse_line(shape, theme)
     geometry = parse_geometry(shape)
 
+    current_path = (*shape_path, shape.shape_id)
     common = dict(
         id=element_id,
+        shape_id=shape.shape_id,
+        shape_name=shape.name,
+        has_text_frame=shape.has_text_frame,
+        default_text_style=(text_module.default_style(shape, theme, placeholder_kind, owner)
+                            if shape.has_text_frame else None),
+        shape_path=list(current_path),
+        slide_bbox=slide_bbox(shape, transform),
         bbox=bbox,
         z_order=z_order,
         rotation=rotation,
@@ -84,7 +96,10 @@ def parse_shape(
     )
 
     if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-        group = parse_group(shape, theme, element_id, assets, owner=owner)
+        group = parse_group(
+            shape, theme, element_id, assets, owner=owner,
+            transform=transform, shape_path=current_path,
+        )
         return SlideElement(type=ElementType.GROUP, group=group, **common)
 
     if getattr(shape, "has_chart", False):
@@ -135,12 +150,20 @@ def parse_group(
     parent_id: str,
     assets: dict,
     owner: Slide | SlideLayout | None = None,
+    *,
+    transform: Affine = IDENTITY,
+    shape_path: tuple[int, ...] = (),
 ) -> GroupElement:
     """Рекурсивно разбирает группу фигур"""
     children: list[SlideElement] = []
+    child_transform = group_transform(shape, transform)
+    parent_path = shape_path or (shape.shape_id,)
     for idx, child in enumerate(shape.shapes):
         child_id = f"{parent_id}-child-{idx}"
-        parsed = parse_shape(child, theme, child_id, assets, owner=owner)
+        parsed = parse_shape(
+            child, theme, child_id, assets, owner=owner,
+            transform=child_transform, shape_path=parent_path,
+        )
         if parsed:
             children.append(parsed)
     return GroupElement(children=children)

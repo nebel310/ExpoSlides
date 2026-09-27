@@ -3,7 +3,6 @@ import logging
 from typing import Any
 
 from aiokafka import AIOKafkaProducer
-
 from app.config import settings
 
 logger = logging.getLogger(__name__)

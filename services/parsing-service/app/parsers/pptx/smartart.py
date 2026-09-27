@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import logging
 
-from lxml import etree
-
 from app.models.presentation import SmartArtElement, SmartArtNode
+from lxml import etree
 
 logger = logging.getLogger(__name__)
 

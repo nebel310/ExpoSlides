@@ -20,7 +20,7 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> bool:
         logger.warning("WS с неизвестным sid: %s", session_id)
         return False
     await SessionRepository.touch(redis, session_id)
-    join_session_room(sid, session_id)
+    await join_session_room(sid, session_id)
     logger.info("WS подключён: socket=%s sid=%s", sid, session_id)
     return True
 

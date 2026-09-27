@@ -1,22 +1,16 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-
-import grpc
-import pytest
-import pytest_asyncio
 import os
+from pathlib import Path
 
 import file_service_pb2
 import file_service_pb2_grpc
-
-from app.config import settings
+import grpc
+import pytest
 from app.kafka.schemas import TaskCreatedPayload, TaskParsedPayload
 from app.models.presentation import Presentation
 from app.services.parser_pipeline import (
-    STRUCTURE_CONTENT_TYPE,
-    STRUCTURE_FILENAME,
     ParserPipeline,
 )
 from tests.integration.helpers import (
@@ -25,7 +19,6 @@ from tests.integration.helpers import (
     make_pptx_with_table,
     make_simple_pptx,
 )
-
 
 pytestmark = pytest.mark.integration
 

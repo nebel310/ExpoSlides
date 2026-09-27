@@ -1,8 +1,7 @@
-from fastapi import Response
-from starlette.requests import Request
-
 from app.config import settings
 from app.utils.cookies import get_sid_from_request, new_sid, set_sid_cookie
+from fastapi import Response
+from starlette.requests import Request
 
 
 def _make_request(cookie_value: str | None) -> Request:

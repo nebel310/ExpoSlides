@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import logging
 
-from pptx.enum.chart import XL_LEGEND_POSITION
-from pptx.enum.dml import MSO_COLOR_TYPE
-
 from app.models.presentation import (
     ChartAxis,
     ChartDataLabels,
@@ -15,6 +12,9 @@ from app.models.presentation import (
     ThemeInfo,
 )
 from app.parsers.pptx.helpers import theme_color_to_token
+
+from pptx.enum.chart import XL_LEGEND_POSITION
+from pptx.enum.dml import MSO_COLOR_TYPE
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,12 @@ def parse_axes(chart) -> list[ChartAxis]:
     """Извлекает параметры осей диаграммы"""
     axes: list[ChartAxis] = []
     for attr, kind in (("category_axis", "category"), ("value_axis", "value")):
-        axis = getattr(chart, attr, None)
+        try:
+            axis = getattr(chart, attr, None)
+        except ValueError:
+            # Круговые и кольцевые диаграммы не имеют осей. python-pptx
+            # сообщает об этом исключением из свойства, а не значением None.
+            continue
         if axis is None:
             continue
         axes.append(parse_axis(axis, kind))

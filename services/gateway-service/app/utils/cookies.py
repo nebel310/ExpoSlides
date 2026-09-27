@@ -1,9 +1,8 @@
 import uuid
 from typing import Optional
 
-from fastapi import Request, Response
-
 from app.config import settings
+from fastapi import Request, Response
 
 
 def get_sid_from_request(request: Request) -> Optional[str]:
@@ -19,7 +18,7 @@ def set_sid_cookie(response: Response, sid: str) -> None:
         max_age=settings.cookie_max_age,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=settings.cookie_secure,
         path="/",
     )
 

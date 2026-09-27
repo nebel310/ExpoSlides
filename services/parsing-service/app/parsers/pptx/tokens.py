@@ -1,13 +1,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
-
-from lxml import etree
-from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 
 from app.models.presentation import (
-    BBox,
     Component,
     ComponentOccurrence,
     ElementType,
@@ -23,6 +18,9 @@ from app.models.presentation import (
     TypographyEntry,
     TypographyScale,
 )
+from lxml import etree
+
+from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +31,7 @@ A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
 
 def extract_theme(prs) -> ThemeInfo | None:
-    """Извлекает цвета и шрифты из theme1.xml"""
+    """Извлекает тему владельца (слайда, макета, мастера или презентации)."""
     try:
         theme_part = _find_theme_part(prs)
         if theme_part is None:
@@ -51,19 +49,32 @@ def extract_theme(prs) -> ThemeInfo | None:
         return None
 
 
-def _find_theme_part(prs):
-    """Ищет theme part сначала у презентации, потом у мастеров"""
+def _find_theme_part(owner):
+    """Разрешает тему по relationships конкретного мастера, а не по имени файла."""
     try:
-        return prs.part.part_related_by(RT.THEME)
+        return owner.part.part_related_by(RT.THEME)
     except KeyError:
         pass
-
-    for slide_master in prs.slide_masters:
-        try:
-            return slide_master.part.part_related_by(RT.THEME)
-        except KeyError:
-            continue
+    if hasattr(owner, "slide_layout"):
+        return _find_theme_part(owner.slide_layout)
+    if hasattr(owner, "slide_master"):
+        return _find_theme_part(owner.slide_master)
+    for master in getattr(owner, "slide_masters", []):
+        theme_part = _find_theme_part(master)
+        if theme_part is not None:
+            return theme_part
     return None
+
+
+def iter_layouts(prs):
+    """Обходит макеты всех мастеров, сохраняя их порядок и уникальность частей."""
+    seen: set[str] = set()
+    for master in prs.slide_masters:
+        for layout in master.slide_layouts:
+            key = str(layout.part.partname)
+            if key not in seen:
+                seen.add(key)
+                yield layout
 
 
 def _parse_clr_scheme(theme_element, nsmap) -> dict[str, str]:
@@ -109,8 +120,11 @@ def _parse_font_scheme(theme_element, nsmap) -> dict[str, str]:
 # ---------- Мастера ----------
 
 
-def extract_masters(prs, layout_indices_by_partname: dict[str, int]) -> list[MasterInfo]:
-    """Собирает информацию о slide masters"""
+def extract_masters(prs, layout_indices_by_partname: dict[str, int], assets=None) -> list[MasterInfo]:
+    """Собирает мастера и их собственный неизменяемый декор."""
+    from app.parsers.pptx.shapes import parse_shape
+
+    assets = assets if assets is not None else {}
     masters: list[MasterInfo] = []
     for idx, master in enumerate(prs.slide_masters, start=1):
         layout_indices: list[int] = []
@@ -122,6 +136,10 @@ def extract_masters(prs, layout_indices_by_partname: dict[str, int]) -> list[Mas
             MasterInfo(
                 index=idx,
                 name=getattr(master, "name", None),
+                theme=extract_theme(master),
+                elements=[parse_shape(shape, extract_theme(master),
+                                      f"master-{idx}-shape-{shape.shape_id}", assets)
+                          for shape in master.shapes],
                 layout_indices=layout_indices,
             )
         )
@@ -131,38 +149,62 @@ def extract_masters(prs, layout_indices_by_partname: dict[str, int]) -> list[Mas
 # ---------- Паттерны ----------
 
 
+def _layout_slots(layout: LayoutInfo) -> list[SlotSignature]:
+    slots = [
+        SlotSignature(kind=ph.kind or PlaceholderKind.OTHER, bbox=ph.bbox, idx=ph.idx)
+        for ph in layout.placeholders
+    ]
+
+    def visit(element: SlideElement) -> None:
+        if element.group:
+            for child in element.group.children:
+                visit(child)
+        elif element.placeholder_kind is None:
+            kind = {
+                ElementType.IMAGE: PlaceholderKind.PICTURE,
+                ElementType.TABLE: PlaceholderKind.TABLE,
+                ElementType.CHART: PlaceholderKind.CHART,
+            }.get(element.type)
+            if element.text and any(
+                run.text.strip() for para in element.text.paragraphs for run in para.runs
+            ):
+                kind = PlaceholderKind.BODY
+            if kind is not None:
+                slots.append(SlotSignature(
+                    kind=kind, bbox=element.slide_bbox or element.bbox, element_id=element.id,
+                ))
+
+    for element in layout.elements:
+        visit(element)
+    return slots
+
+
 def compute_patterns(
     layouts: list[LayoutInfo],
     signatures: dict[int, list[PlaceholderKind]],
 ) -> list[LayoutPattern]:
-    """Группирует макеты по сигнатуре placeholder'ов"""
-    groups: dict[tuple, list[int]] = {}
+    """Группирует композиции по ролям и геометрии, включая обычные текстовые блоки."""
+    groups: dict[tuple, list[LayoutInfo]] = {}
+    slots_by_layout: dict[int, list[SlotSignature]] = {}
     for layout in layouts:
-        sig = tuple(sorted(signatures.get(layout.index, []), key=lambda x: x.value))
-        groups.setdefault(sig, []).append(layout.index)
+        slots = _layout_slots(layout)
+        slots_by_layout[layout.index] = slots
+        geometry = tuple(sorted(
+            (slot.kind.value, _snap(slot.bbox.left), _snap(slot.bbox.top),
+             _snap(slot.bbox.width), _snap(slot.bbox.height))
+            for slot in slots
+        ))
+        kinds = tuple(sorted(kind.value for kind in signatures.get(layout.index, [])))
+        groups.setdefault((kinds, geometry), []).append(layout)
 
     patterns: list[LayoutPattern] = []
-    for idx, (sig, layout_indices) in enumerate(groups.items(), start=1):
-        slots: list[SlotSignature] = []
-        primary = next((l for l in layouts if l.index == layout_indices[0]), None)
-        if primary:
-            for ph in primary.placeholders:
-                slots.append(
-                    SlotSignature(
-                        kind=ph.kind or PlaceholderKind.OTHER,
-                        bbox=ph.bbox,
-                        idx=ph.idx,
-                    )
-                )
-        name = "+".join(k.value for k in sig) if sig else "blank"
-        patterns.append(
-            LayoutPattern(
-                id=f"pattern-{idx}",
-                name=name,
-                layout_indices=layout_indices,
-                slots=slots,
-            )
-        )
+    for idx, group in enumerate(groups.values(), start=1):
+        slots = slots_by_layout[group[0].index]
+        name = "+".join(sorted(slot.kind.value for slot in slots)) or "blank"
+        patterns.append(LayoutPattern(
+            id=f"pattern-{idx}", name=name,
+            layout_indices=[layout.index for layout in group], slots=slots,
+        ))
     return patterns
 
 
@@ -254,7 +296,8 @@ def build_layout_size_map(
     Нужна для fallback, когда у run на слайде размер не задан явно.
     """
     result: dict[tuple[int, int], list[float]] = {}
-    for idx, layout in enumerate(prs.slide_layouts, start=1):
+    for layout in iter_layouts(prs):
+        idx = layout_indices_by_partname[str(layout.part.partname)]
         for shape in layout.shapes:
             if not shape.is_placeholder:
                 continue
@@ -350,7 +393,7 @@ def compute_typography(slides: list[Slide]) -> TypographyScale:
 # ---------- Сетка ----------
 
 
-GRID_STEP_EMU = 45720  # ~0.5 см
+GRID_STEP_EMU = 45720  # 0.05 дюйма; небольшой допуск координат шаблона
 
 
 def compute_grid(
@@ -365,11 +408,11 @@ def compute_grid(
     bottoms: list[int] = []
 
     for layout in layouts:
-        for ph in layout.placeholders:
-            lefts.append(ph.bbox.left)
-            tops.append(ph.bbox.top)
-            rights.append(ph.bbox.left + ph.bbox.width)
-            bottoms.append(ph.bbox.top + ph.bbox.height)
+        for slot in _layout_slots(layout):
+            lefts.append(slot.bbox.left)
+            tops.append(slot.bbox.top)
+            rights.append(slot.bbox.left + slot.bbox.width)
+            bottoms.append(slot.bbox.top + slot.bbox.height)
 
     if not lefts:
         return Grid()
@@ -379,7 +422,7 @@ def compute_grid(
     margin_right = slide_width - max(rights)
     margin_bottom = slide_height - max(bottoms)
 
-    column_positions = sorted(set(_snap(l) for l in lefts))
+    column_positions = sorted(set(_snap(left) for left in lefts))
     row_positions = sorted(set(_snap(t) for t in tops))
 
     return Grid(

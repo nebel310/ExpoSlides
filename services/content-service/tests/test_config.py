@@ -1,7 +1,6 @@
-from pydantic import ValidationError
 import pytest
-
 from app.config import Settings
+from pydantic import ValidationError
 
 
 def test_settings_valid_defaults(_env_file=None):

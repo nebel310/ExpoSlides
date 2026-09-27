@@ -19,12 +19,15 @@ class Settings(BaseSettings):
 
     file_service_grpc_host: str = "file-service"
     file_service_grpc_port: int = 50051
+    file_service_timeout: float = Field(default=30, gt=0)
 
     max_upload_size: int = 52428800
     gateway_port: int = 1000
 
     cookie_name: str = "exposlides_sid"
     cookie_max_age: int = 2592000
+    cookie_secure: bool = False
+    allowed_origins: list[str] = Field(default_factory=list)
 
     log_level: str = "INFO"
 

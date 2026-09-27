@@ -1,19 +1,23 @@
 from unittest.mock import AsyncMock
 
+from app.repositories.files import FileRepository
 from app.services import task_service as ts_module
 
 
-async def _bootstrap(client) -> str:
+async def _bootstrap(client, redis) -> str:
     """Создаёт сессию через bootstrap"""
     response = await client.post("/api/session/bootstrap")
-    return response.json()["sid"]
+    sid = response.json()["sid"]
+    for file_id in ("tf", "sf"):
+        await FileRepository.grant(redis, sid, file_id)
+    return sid
 
 
-async def test_create_task_ok(client, monkeypatch):
+async def test_create_task_ok(client, redis, monkeypatch):
     """Проверяет создание задачи"""
     publish = AsyncMock()
     monkeypatch.setattr(ts_module.kafka_producer, "publish", publish)
-    sid = await _bootstrap(client)
+    sid = await _bootstrap(client, redis)
     response = await client.post(
         "/api/tasks",
         json={"template_file_id": "tf", "script_file_id": "sf"},
@@ -34,9 +38,9 @@ async def test_create_task_without_session(client):
     assert response.status_code == 401
 
 
-async def test_create_task_invalid_body(client):
+async def test_create_task_invalid_body(client, redis):
     """Проверяет невалидное тело запроса"""
-    sid = await _bootstrap(client)
+    sid = await _bootstrap(client, redis)
     response = await client.post(
         "/api/tasks",
         json={"template_file_id": "tf"},
@@ -45,9 +49,9 @@ async def test_create_task_invalid_body(client):
     assert response.status_code == 422
 
 
-async def test_list_tasks_empty(client):
+async def test_list_tasks_empty(client, redis):
     """Проверяет пустой список задач"""
-    sid = await _bootstrap(client)
+    sid = await _bootstrap(client, redis)
     response = await client.get(
         "/api/tasks",
         cookies={"exposlides_sid": sid},
@@ -56,11 +60,11 @@ async def test_list_tasks_empty(client):
     assert response.json() == {"tasks": []}
 
 
-async def test_list_tasks_with_one(client, monkeypatch):
+async def test_list_tasks_with_one(client, redis, monkeypatch):
     """Проверяет список из одной задачи"""
     publish = AsyncMock()
     monkeypatch.setattr(ts_module.kafka_producer, "publish", publish)
-    sid = await _bootstrap(client)
+    sid = await _bootstrap(client, redis)
     create = await client.post(
         "/api/tasks",
         json={"template_file_id": "tf", "script_file_id": "sf"},
@@ -77,11 +81,11 @@ async def test_list_tasks_with_one(client, monkeypatch):
     assert body["tasks"][0]["status"] == "queued"
 
 
-async def test_get_task_ok(client, monkeypatch):
+async def test_get_task_ok(client, redis, monkeypatch):
     """Проверяет получение задачи"""
     publish = AsyncMock()
     monkeypatch.setattr(ts_module.kafka_producer, "publish", publish)
-    sid = await _bootstrap(client)
+    sid = await _bootstrap(client, redis)
     create = await client.post(
         "/api/tasks",
         json={"template_file_id": "tf", "script_file_id": "sf"},
@@ -96,9 +100,9 @@ async def test_get_task_ok(client, monkeypatch):
     assert response.json()["task_id"] == task_id
 
 
-async def test_get_task_unknown(client):
+async def test_get_task_unknown(client, redis):
     """Проверяет неизвестный task_id"""
-    sid = await _bootstrap(client)
+    sid = await _bootstrap(client, redis)
     response = await client.get(
         "/api/tasks/unknown",
         cookies={"exposlides_sid": sid},
@@ -106,11 +110,11 @@ async def test_get_task_unknown(client):
     assert response.status_code == 404
 
 
-async def test_get_task_other_session(client, monkeypatch):
+async def test_get_task_other_session(client, redis, monkeypatch):
     """Проверяет доступ к задаче другой сессии"""
     publish = AsyncMock()
     monkeypatch.setattr(ts_module.kafka_producer, "publish", publish)
-    sid_a = await _bootstrap(client)
+    sid_a = await _bootstrap(client, redis)
     create = await client.post(
         "/api/tasks",
         json={"template_file_id": "tf", "script_file_id": "sf"},
@@ -118,7 +122,7 @@ async def test_get_task_other_session(client, monkeypatch):
     )
     task_id = create.json()["task_id"]
     client.cookies.clear()
-    sid_b = await _bootstrap(client)
+    sid_b = await _bootstrap(client, redis)
     assert sid_b != sid_a
     response = await client.get(
         f"/api/tasks/{task_id}",

@@ -4,7 +4,6 @@ from uuid import uuid4
 
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 
-
 KAFKA_BOOTSTRAP = os.getenv("E2E_KAFKA_BOOTSTRAP", "localhost:9093")
 FILE_SERVICE_HOST = os.getenv("E2E_FILE_SERVICE_HOST", "127.0.0.1")
 FILE_SERVICE_PORT = int(os.getenv("E2E_FILE_SERVICE_PORT", "50051"))

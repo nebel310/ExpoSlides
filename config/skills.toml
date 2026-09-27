@@ -1,0 +1,32 @@
+schema_version = "1.0"
+version = "1.0.0"
+
+[skills.template_reader]
+version = "1.0.0"
+implementation = "exposlides.template_profile:profile_from_json"
+
+[skills.fact_checker]
+version = "1.0.0"
+implementation = "exposlides.design_content:validate_story"
+
+[skills.layout_designer]
+version = "1.0.0"
+implementation = "exposlides.design_layout:create_variants"
+
+[skills.native_builder]
+version = "1.0.0"
+implementation = "exposlides.design_builder:build_deck"
+
+[skills.deterministic_auditor]
+version = "1.0.0"
+implementation = "exposlides.design_audit:audit_deck"
+max_bullets = 6
+max_bullet_words = 15
+max_table_rows = 7
+max_table_columns = 5
+max_chart_series = 5
+minimum_contrast = 4.5
+
+[skills.exporter]
+version = "1.0.0"
+implementation = "exposlides.design_export:export_deck"

@@ -2,8 +2,6 @@ import os
 from dataclasses import dataclass
 
 
-
-
 @dataclass
 class Settings:
     minio_endpoint: str = os.getenv("MINIO_ENDPOINT", "localhost:9000")

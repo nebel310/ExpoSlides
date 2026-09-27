@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-
 from app.domain.contract import ContentGenerationResult
 from app.models.messages import (
     MessageEnvelope,

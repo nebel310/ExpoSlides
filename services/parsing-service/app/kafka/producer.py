@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 
 from aiokafka import AIOKafkaProducer
-
 from app.kafka.schemas import MessageEnvelope
 
 logger = logging.getLogger(__name__)

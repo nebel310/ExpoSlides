@@ -1,28 +1,20 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-from pptx import Presentation as PPTXPresentation
-from pptx.util import Emu, Pt
-
-from app.models.presentation import Fill, FillType
 from app.models.presentation import (
     BBox,
     ElementType,
+    Fill,
+    FillType,
     LayoutInfo,
     LayoutPattern,
     PlaceholderInfo,
     PlaceholderKind,
     Slide,
     SlideElement,
-    SlotSignature,
     TextStyle,
-    TypographyEntry,
-    TypographyScale,
 )
 from app.parsers.pptx import tokens as tokens_module
-
+from pptx import Presentation as PPTXPresentation
 
 # ---------- extract_theme ----------
 
@@ -78,7 +70,7 @@ def test_extract_masters_lists_layout_indices() -> None:
     """Мастер ссылается на индексы макетов"""
     prs = PPTXPresentation()
     layout_indices = {
-        str(l.part.partname): idx for idx, l in enumerate(prs.slide_layouts, start=1)
+        str(layout.part.partname): idx for idx, layout in enumerate(prs.slide_layouts, start=1)
     }
 
     masters = tokens_module.extract_masters(prs, layout_indices)
@@ -370,9 +362,9 @@ def _layout_with_placeholders(
             kind=PlaceholderKind.BODY,
             name=f"ph-{i}",
             idx=i,
-            bbox=BBox(left=l, top=t, width=w, height=h),
+            bbox=BBox(left=left, top=top, width=width, height=height),
         )
-        for i, (l, t, w, h) in enumerate(bboxes)
+        for i, (left, top, width, height) in enumerate(bboxes)
     ]
     return LayoutInfo(name=f"L{index}", index=index, placeholders=placeholders)
 
@@ -425,7 +417,7 @@ def test_compute_grid_snap_function() -> None:
 def test_build_layout_size_map_returns_dict() -> None:
     prs = PPTXPresentation()
     layout_indices = {
-        str(l.part.partname): idx for idx, l in enumerate(prs.slide_layouts, start=1)
+        str(layout.part.partname): idx for idx, layout in enumerate(prs.slide_layouts, start=1)
     }
     result = tokens_module.build_layout_size_map(prs, layout_indices)
     assert isinstance(result, dict)
@@ -436,7 +428,16 @@ def test_collect_all_fonts_empty() -> None:
 
 
 def test_collect_all_fonts_ignores_empty() -> None:
-    from app.models.presentation import Slide, SlideElement, BBox, ElementType, TextElement, Paragraph, Run, TextStyle
+    from app.models.presentation import (
+        BBox,
+        ElementType,
+        Paragraph,
+        Run,
+        Slide,
+        SlideElement,
+        TextElement,
+        TextStyle,
+    )
 
     elem = SlideElement(
         id="a",

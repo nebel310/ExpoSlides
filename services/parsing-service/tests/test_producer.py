@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from app.kafka.producer import KafkaProducer
 from app.kafka.schemas import MessageEnvelope
 

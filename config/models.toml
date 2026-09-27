@@ -1,0 +1,29 @@
+schema_version = "1.0"
+registry_version = "1.0.0"
+verified_at = "2026-09-27"
+allowed_licenses = ["Apache-2.0", "MIT"]
+max_language_parameters_billions = 35
+max_image_parameters_billions = 20
+
+[models.qwen_3_8_27b]
+id = "Qwen/Qwen3.8-27B"
+parameters_billions = 27
+license = "Apache-2.0"
+tasks = ["text", "image-to-text"]
+source = "https://huggingface.co/Qwen/Qwen3.8-27B"
+endpoint_aliases = ["Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-27B:deepinfra", "qwen3.8-27b"]
+live_endpoint_verified = false
+
+[models.flux_1_schnell]
+id = "black-forest-labs/FLUX.1-schnell"
+parameters_billions = 12
+license = "Apache-2.0"
+tasks = ["text-to-image"]
+source = "https://huggingface.co/black-forest-labs/FLUX.1-schnell"
+endpoint_aliases = ["black-forest-labs/FLUX.1-schnell"]
+live_endpoint_verified = false
+
+[competition]
+top10_inference_provider = "VK"
+top10_language_model = "Qwen/Qwen3.8-27B"
+vk_endpoint_verified = false

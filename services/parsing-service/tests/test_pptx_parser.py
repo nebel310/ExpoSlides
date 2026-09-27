@@ -3,13 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from app.models.presentation import SCHEMA_VERSION
+from app.parsers.pptx import ParseResult, PPTXParser
+from app.parsers.pptx.assets import AssetBlob
 from pptx import Presentation as PPTXPresentation
 from pptx.util import Emu
-
-from app.models.presentation import SCHEMA_VERSION
-from app.parsers.pptx import PPTXParser, ParseResult
-from app.parsers.pptx.assets import AssetBlob
-
 
 PNG_1X1 = (
     b"\x89PNG\r\n\x1a\n"

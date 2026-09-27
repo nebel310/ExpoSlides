@@ -11,9 +11,6 @@ from app.kafka.schemas import TaskCreatedPayload, TaskParsedPayload
 from app.models.presentation import Presentation
 from app.parsers.pptx import PPTXParser
 
-
-
-
 logger = logging.getLogger(__name__)
 
 STRUCTURE_FILENAME = "structure.json"

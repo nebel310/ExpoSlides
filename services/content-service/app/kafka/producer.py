@@ -2,8 +2,6 @@ import json
 import logging
 
 from aiokafka import AIOKafkaProducer
-from pydantic import BaseModel
-
 from app.config import settings
 from app.models.messages import MessageEnvelope
 

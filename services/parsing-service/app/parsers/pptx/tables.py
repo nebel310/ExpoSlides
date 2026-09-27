@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 
-from pptx.oxml.ns import qn
-
 from app.models.presentation import TableCell, TableElement
+
+from pptx.oxml.ns import qn
 
 logger = logging.getLogger(__name__)
 

@@ -5,9 +5,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from pptx import Presentation as PPTXPresentation
-
 from app.main import _parse_args, main, run_cli
+from pptx import Presentation as PPTXPresentation
 
 
 def _save_simple(tmp_path: Path) -> Path:

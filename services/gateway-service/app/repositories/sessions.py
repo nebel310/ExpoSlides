@@ -1,6 +1,6 @@
 import redis.asyncio as aioredis
-
 from app.config import settings
+from app.repositories.files import FileRepository
 
 
 class SessionRepository:
@@ -33,6 +33,7 @@ class SessionRepository:
         """Обновляет TTL сессии"""
         await redis.expire(cls._key(sid), cls.TTL)
         await redis.expire(cls._tasks_key(sid), cls.TTL)
+        await redis.expire(FileRepository.key(sid), cls.TTL)
 
     @classmethod
     async def add_task(cls, redis: aioredis.Redis, sid: str, task_id: str) -> None:
