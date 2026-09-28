@@ -1,12 +1,9 @@
-from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 from aiokafka import AIOKafkaProducer
-
 from app.config import settings
 from app.grpc.file_service_client import FileServiceClient
-
 from helpers import (
     FILE_SERVICE_HOST,
     FILE_SERVICE_PORT,

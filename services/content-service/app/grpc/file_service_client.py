@@ -1,10 +1,9 @@
 import logging
 
 import grpc
+from app.config import settings
 from file_service_pb2 import DownloadFileRequest, UploadFileRequest
 from file_service_pb2_grpc import FileServiceStub
-
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 

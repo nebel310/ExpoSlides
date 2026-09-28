@@ -176,3 +176,85 @@ def test_content_cli_cannot_overwrite_user_mapping(
 
     assert exit_code == 1
     assert mapping.read_bytes() == original_mapping
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_network_content_matches_cli_and_builder(
+    tmp_path: Path, monkeypatch, service_importer, retry: bool
+) -> None:
+    """Оба входа сохраняют одинаковый файл, читаемый builder без адаптеров."""
+    import sys
+    from types import ModuleType
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    main = service_importer(CONTENT_SERVICE_ROOT, "app.main")
+    domain = importlib.import_module("app.domain.generate")
+    grpc_client = ModuleType("app.grpc.file_service_client")
+    grpc_client.FileServiceClient = AsyncMock
+    monkeypatch.setitem(sys.modules, "app.grpc.file_service_client", grpc_client)
+    pipeline_module = importlib.import_module("app.services.content_pipeline")
+    messages = importlib.import_module("app.models.messages")
+    graph_state = importlib.import_module("app.models.graph_state")
+    template = tmp_path / "template.json"
+    script = tmp_path / "script.txt"
+    output = tmp_path / "generated.json"
+    _write_template(template)
+    script.write_text("Команда готовит запуск продукта", encoding="utf-8")
+
+    received_feedback = []
+
+    class FakeGraph:
+        async def ainvoke(self, state):
+            received_feedback.append(state.feedback)
+            return state.model_copy(update={
+                "content": {
+                    1: graph_state.GeneratedSlideContent(
+                        placeholders={"0": "Команда готовит запуск продукта"}
+                    )
+                },
+                "validation": graph_state.ValidationReport(ok=True, issues=[]),
+            }).model_dump()
+
+    monkeypatch.setattr(main, "build_graph", FakeGraph)
+    monkeypatch.setattr(domain, "build_graph", FakeGraph)
+    asyncio.run(main.run(template, script, output))
+    expected = json.loads(output.read_text(encoding="utf-8"))
+
+    file_client = AsyncMock()
+    downloads = [template.read_bytes(), script.read_bytes()]
+    payload_fields = {
+        "structure_file_id": uuid4(), "script_file_id": uuid4(), "template_file_id": uuid4(),
+    }
+    if retry:
+        downloads.append("Уточнить формулировки".encode())
+        payload = messages.TaskContentRetryPayload(
+            **payload_fields, feedback_file_id=uuid4(), attempt=1
+        )
+    else:
+        payload = messages.TaskParsedPayload(**payload_fields)
+    file_client.download_file.side_effect = downloads
+    file_client.upload_file.return_value = str(uuid4())
+    producer = AsyncMock()
+    pipeline = pipeline_module.ContentPipeline(file_client, producer)
+    envelope = messages.MessageEnvelope(
+        task_id=uuid4(), attempt=1, payload=payload.model_dump(mode="json")
+    )
+    asyncio.run(pipeline.handle(
+        envelope, payload, "task.content_retry" if retry else "task.parsed"
+    ))
+
+    assert received_feedback == [None, "Уточнить формулировки" if retry else None]
+    file_client.upload_file.assert_awaited_once()
+    uploaded = file_client.upload_file.await_args.kwargs
+    assert uploaded["filename"] == "content.json"
+    assert uploaded["content_type"] == "application/json"
+    assert json.loads(uploaded["content"]) == expected
+    assert producer.publish.await_args.args[0] == "task.content_ready"
+    builder = service_importer(
+        REPOSITORY_ROOT / "services" / "builder-service", "app.models.content"
+    )
+    parsed = builder.GeneratedContent.model_validate_json(uploaded["content"])
+    assert parsed.content[1].placeholders == {"0": "Команда готовит запуск продукта"}
+    assert parsed.validation_report == {"ok": True, "issues": []}
+    assert parsed.error is None

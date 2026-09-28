@@ -7,6 +7,8 @@ dependencies = [
     "aiobotocore>=3.9.0",
     "aiokafka>=0.14.0",
     "asyncpg>=0.31.0",
+    "fakeredis>=2.38.0",
+    "fastapi[all]>=0.141.1",
     "grpcio>=1.83.1",
     "grpcio-tools>=1.83.1",
     "httpx>=0.28.1,<1",
@@ -14,8 +16,11 @@ dependencies = [
     "lxml",
     "pydantic>=2",
     "pydantic-settings",
+    "pytest>=9.1.1",
     "python-dotenv",
     "python-pptx",
+    "python-socketio>=5.17.0",
+    "redis>=8.1.0",
     "sqlalchemy>=2.0.52",
 ]
 
@@ -29,6 +34,11 @@ dev = [
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+pythonpath = [".", "services/parsing-service"]
+markers = [
+    "integration: tests that require running docker services",
+    "e2e: end-to-end tests requiring kafka + file-service + parser-service",
+]
 
 [tool.ruff]
 line-length = 100

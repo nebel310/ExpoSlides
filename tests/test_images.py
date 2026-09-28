@@ -146,11 +146,17 @@ def test_invalid_scene_fails_before_image_generation(settings, content):
         asyncio.run(run())
 
 
+@pytest.mark.parametrize("schema_version", ["1.0.0", "2.0.0"])
 @pytest.mark.parametrize("placeholder", [False, True])
 def test_generated_image_reopens_and_preserves_geometry_style_layer_and_links(
-    tmp_path, monkeypatch, settings, placeholder,
+    tmp_path, monkeypatch, settings, placeholder, schema_version,
 ):
     path, template = write_deck(tmp_path, placeholder=placeholder)
+    data = json.loads(template.read_text(encoding="utf-8"))
+    data["schema_version"] = schema_version
+    if schema_version == "2.0.0":
+        data["tokens"] = {"theme": data.pop("theme")}
+    template.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     before = Presentation(path)
     slots = find_image_slots(before)
     assert len(slots) == 1

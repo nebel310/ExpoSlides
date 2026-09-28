@@ -1,0 +1,22 @@
+# Все пути относительны этому файлу. Используйте свои материалы вне Git.
+template = "../local-input/template.pptx"
+script = "../local-input/script.txt"
+output_dir = "../local-output/demo-01"
+timeout_seconds = 300
+
+[generation]
+purpose = "Обосновать решение на основе исходных материалов"
+audience = "Команда продукта"
+slide_count = 12
+count_mode = "exact"
+mode = "llm"
+language = "ru"
+contextual_audit = false
+required_messages = []
+
+[generation.generated_image]
+enabled = false
+prompt = ""
+seed = 0
+width = 1024
+height = 576

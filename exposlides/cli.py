@@ -35,6 +35,7 @@ CONTENT_ERROR_CODES = {
     22: "timeout",
     23: "auth",
     24: "network",
+    25: "configuration",
 }
 CONTENT_ERROR_MARKER = "EXPOSLIDES_CONTENT_ERROR="
 

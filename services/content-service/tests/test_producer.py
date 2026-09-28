@@ -2,7 +2,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-
 from app.kafka.producer import KafkaProducer
 from app.models.messages import MessageEnvelope
 

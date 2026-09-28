@@ -14,6 +14,7 @@ from app.models.messages import (
     TaskFailedPayload,
     TaskParsedPayload,
 )
+from app.models.response import GenerationResponse
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +139,12 @@ class ContentPipeline:
         )
         result = await self._domain_fn(request)
 
-        content_bytes = json.dumps(result.content, ensure_ascii=False).encode("utf-8")
+        response = GenerationResponse(
+            content=result.content,
+            validation_report=result.validation_report,
+            error=result.reason,
+        )
+        content_bytes = json.dumps(response.model_dump(), ensure_ascii=False).encode("utf-8")
         content_file_id = await self._file_client.upload_file(
             filename="content.json",
             content=content_bytes,

@@ -1,8 +1,6 @@
 from uuid import uuid4
 
-from pydantic import ValidationError
 import pytest
-
 from app.models.messages import (
     MessageEnvelope,
     TaskContentReadyPayload,
@@ -10,6 +8,7 @@ from app.models.messages import (
     TaskFailedPayload,
     TaskParsedPayload,
 )
+from pydantic import ValidationError
 
 
 def _envelope_dict(payload: dict) -> dict:

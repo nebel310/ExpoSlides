@@ -15,3 +15,4 @@ class ContentGenerationResult(BaseModel):
     content: dict[int, dict]
     passed: bool
     reason: str | None = None
+    validation_report: dict | None = None

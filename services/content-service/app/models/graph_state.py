@@ -58,6 +58,7 @@ class ContentGraphState(BaseModel):
     """Состояние графа"""
     presentation: PresentationData
     script: str
+    feedback: Optional[str] = None
     user_mapping: Optional[dict] = None
     settings: GenerationSettings = Field(default_factory=GenerationSettings)
     analysis: Optional[ScriptAnalysis] = None

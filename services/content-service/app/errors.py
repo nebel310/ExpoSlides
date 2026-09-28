@@ -10,6 +10,7 @@ CONTENT_ERROR_EXIT_CODES = {
     "timeout": 22,
     "auth": 23,
     "network": 24,
+    "configuration": 25,
 }
 
 
@@ -19,6 +20,10 @@ class GenerationPipelineError(RuntimeError):
 
 class LLMGenerationError(GenerationPipelineError):
     """The LLM request or its structured response could not be recovered."""
+
+
+class GenerationConfigurationError(GenerationPipelineError):
+    """The versioned role, model registry, or prompt configuration is invalid."""
 
 
 class LLMCredentialsError(LLMGenerationError):
@@ -68,6 +73,8 @@ def content_error_code(error: BaseException, *, credentials_configured: bool = T
         for item in chain
     ):
         return "network"
+    if any(isinstance(item, GenerationConfigurationError) for item in chain):
+        return "configuration"
     if any(
         isinstance(item, ValidationError) or getattr(item, "invalid_response", False) is True
         for item in chain

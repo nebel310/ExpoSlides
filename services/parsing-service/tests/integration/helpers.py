@@ -1,59 +1,73 @@
 from __future__ import annotations
 
-from io import BytesIO
+import io
+from pathlib import Path
 
 from pptx import Presentation as PPTXPresentation
-from pptx.util import Inches, Pt
+from pptx.util import Emu
+
+PNG_1X1 = (
+    b"\x89PNG\r\n\x1a\n"
+    b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+    b"\x00\x00\x00\rIDATx\x9cc\xf8\xcf\xc0\x00\x00\x00\x03\x00\x01"
+    b"\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 
-def build_simple_pptx() -> bytes:
-    """Генерит pptx с титульным слайдом и слайдом с текстом"""
+def make_simple_pptx(title: str = "Hello", subtitle: str = "World") -> bytes:
+    """Возвращает байты pptx с титульным слайдом"""
     prs = PPTXPresentation()
-    slide_width = prs.slide_width
-    slide_height = prs.slide_height
-
-    title_slide = prs.slides.add_slide(prs.slide_layouts[0])
-    title_slide.shapes.title.text = "Integration Test"
-    if len(title_slide.placeholders) > 1:
-        title_slide.placeholders[1].text = "Parser Service"
-
-    content_slide = prs.slides.add_slide(prs.slide_layouts[1])
-    content_slide.shapes.title.text = "Key points"
-    body = content_slide.placeholders[1].text_frame
-    body.text = "First point"
-    paragraph = body.add_paragraph()
-    paragraph.text = "Second point"
-    paragraph.level = 1
-
-    assert prs.slide_width == slide_width
-    assert prs.slide_height == slide_height
-
-    buffer = BytesIO()
+    slide = prs.slides.add_slide(prs.slide_layouts[0])
+    slide.shapes.title.text = title
+    slide.placeholders[1].text = subtitle
+    buffer = io.BytesIO()
     prs.save(buffer)
     return buffer.getvalue()
 
 
-def build_pptx_with_table() -> bytes:
-    """Генерит pptx со слайдом, содержащим таблицу"""
+def make_pptx_with_table(rows: int = 2, cols: int = 2) -> bytes:
+    """Возвращает байты pptx со слайдом и таблицей"""
     prs = PPTXPresentation()
-    blank_layout = prs.slide_layouts[6]
-    slide = prs.slides.add_slide(blank_layout)
-
-    rows, cols = 3, 3
-    left, top = Inches(1), Inches(1)
-    width, height = Inches(6), Inches(3)
-    table_shape = slide.shapes.add_table(rows, cols, left, top, width, height)
-    table = table_shape.table
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    shape = slide.shapes.add_table(
+        rows, cols, Emu(0), Emu(0), Emu(4572000), Emu(2286000)
+    )
+    table = shape.table
     for r in range(rows):
         for c in range(cols):
-            table.cell(r, c).text = f"cell-{r}-{c}"
+            table.cell(r, c).text = f"r{r}c{c}"
+    buffer = io.BytesIO()
+    prs.save(buffer)
+    return buffer.getvalue()
 
-    textbox = slide.shapes.add_textbox(Inches(1), Inches(4), Inches(6), Inches(1))
-    tf = textbox.text_frame
-    tf.text = "Note about the table"
-    run = tf.paragraphs[0].runs[0]
-    run.font.size = Pt(18)
 
-    buffer = BytesIO()
+def make_pptx_with_image(tmp_dir: Path, slides_with_image: int = 1) -> bytes:
+    """Возвращает байты pptx с N слайдами, на каждом — одна и та же картинка"""
+    img = tmp_dir / "tiny.png"
+    img.write_bytes(PNG_1X1)
+
+    prs = PPTXPresentation()
+    for _ in range(slides_with_image):
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        slide.shapes.add_picture(
+            str(img), Emu(0), Emu(0), width=Emu(914400), height=Emu(914400)
+        )
+    buffer = io.BytesIO()
+    prs.save(buffer)
+    return buffer.getvalue()
+
+
+def make_pptx_with_bullets(bullets: int = 3) -> bytes:
+    """Возвращает байты pptx со слайдом и списком буллетов"""
+    prs = PPTXPresentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.shapes.title.text = "Bullets"
+    body = slide.placeholders[1].text_frame
+    body.text = "Bullet 1"
+    for i in range(2, bullets + 1):
+        p = body.add_paragraph()
+        p.text = f"Bullet {i}"
+    buffer = io.BytesIO()
     prs.save(buffer)
     return buffer.getvalue()

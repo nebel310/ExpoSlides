@@ -8,6 +8,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 PDF_EXPORT = (
@@ -16,10 +17,35 @@ PDF_EXPORT = (
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
+def _configure_font_discovery(soffice: str, environment: dict[str, str]) -> None:
+    """Подключить комплектный Fontconfig, не заменяя явные настройки пользователя.
+
+    Некоторые переносимые macOS-сборки ищут fonts.conf по пути машины сборки,
+    хотя рабочий конфиг с системными и пользовательскими шрифтами есть в .app.
+    Поддерживаем прямой executable и launcher в каталоге runtime bin/override;
+    сам runtime и глобальное окружение остаются неизменными.
+    """
+    if "FONTCONFIG_FILE" in environment or "FONTCONFIG_PATH" in environment:
+        return
+    executable = Path(soffice).resolve()
+    candidates = [executable.parent.parent / "Resources/fontconfig/fonts.conf"]
+    runtime = executable.parent.parent.parent
+    candidates.extend(sorted(
+        (runtime / "native/libreoffice-headless/libreoffice").glob(
+            "*.app/Contents/Resources/fontconfig/fonts.conf"
+        )
+    ))
+    for config in candidates:
+        if config.is_file():
+            environment["FONTCONFIG_FILE"] = str(config)
+            environment["FONTCONFIG_PATH"] = str(config.parent)
+            return
+
+
 class PreviewRenderer:
     """Один фоновый рендерер; запуск очереди контролирует веб-приложение."""
 
-    def __init__(self, timeout: float = 90) -> None:
+    def __init__(self, timeout: float = 90, *, deadline: float | None = None) -> None:
         self.soffice = shutil.which("soffice") or shutil.which("libreoffice")
         if self.soffice is None:
             mac_app = Path("/Applications/LibreOffice.app/Contents/MacOS/soffice")
@@ -27,6 +53,7 @@ class PreviewRenderer:
                 self.soffice = str(mac_app)
         self.pdftoppm = shutil.which("pdftoppm")
         self.timeout = timeout
+        self.deadline = deadline
         self._lock = threading.Lock()
         self._closed = False
         self._process: subprocess.Popen[bytes] | None = None
@@ -35,7 +62,9 @@ class PreviewRenderer:
     def available(self) -> bool:
         return self.soffice is not None and self.pdftoppm is not None
 
-    def render(self, source: Path, output_dir: Path, slide_count: int) -> list[Path]:
+    def render(
+        self, source: Path, output_dir: Path, slide_count: int, *, pdf_output: Path | None = None,
+    ) -> list[Path]:
         """Вернуть кадры всех слайдов, включая скрытые, в исходном порядке."""
         soffice, pdftoppm = self.soffice, self.pdftoppm
         if soffice is None or pdftoppm is None:
@@ -48,6 +77,7 @@ class PreviewRenderer:
             cache.mkdir()
             environment = os.environ.copy()
             environment["XDG_CACHE_HOME"] = str(cache)
+            _configure_font_discovery(soffice, environment)
             self._run(
                 [
                     soffice,
@@ -64,6 +94,9 @@ class PreviewRenderer:
             pdf = work / f"{source.stem}.pdf"
             if not pdf.is_file() or pdf.stat().st_size == 0:
                 raise RuntimeError("Не удалось создать предпросмотр презентации.")
+            if pdf_output is not None:
+                pdf_output.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(pdf, pdf_output)
             self._run(
                 [pdftoppm, "-png", "-scale-to", "1400", str(pdf), str(work / "slide")],
                 environment,
@@ -98,7 +131,10 @@ class PreviewRenderer:
             self._process = process
         try:
             try:
-                process.wait(timeout=self.timeout)
+                remaining = self.timeout if self.deadline is None else min(
+                    self.timeout, max(0, self.deadline-time.monotonic()),
+                )
+                process.wait(timeout=remaining)
             except subprocess.TimeoutExpired as error:
                 self._kill(process)
                 raise RuntimeError("Превышено время создания предпросмотра.") from error

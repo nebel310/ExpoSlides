@@ -106,3 +106,10 @@ def inherited_font(
         if size_pt is not None and font_name is not None:
             break
     return size_pt, font_name
+
+
+def inherited_run_properties(
+    shape: BaseShape, paragraph: _Paragraph, owner: Slide | SlideLayout
+) -> Iterator[_Element]:
+    """Свойства run по приоритету наследования для цвета и начертания."""
+    yield from _font_sources(shape, paragraph, owner)

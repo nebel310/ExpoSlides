@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-
 from app.domain.contract import ContentGenerationResult
 from app.models.messages import (
     MessageEnvelope,
@@ -88,6 +87,12 @@ async def test_handle_parsed_valid_publishes_ready():
 
     assert file_client.download_file.await_count == 2
     file_client.upload_file.assert_awaited_once()
+    uploaded = json.loads(file_client.upload_file.await_args.kwargs["content"])
+    assert uploaded == {
+        "content": {"1": {"placeholders": {"0": "текст"}, "notes": None}},
+        "validation_report": None,
+        "error": None,
+    }
     producer.publish.assert_awaited_once()
     topic_arg, envelope_arg = producer.publish.await_args.args
     assert topic_arg == "task.content_ready"

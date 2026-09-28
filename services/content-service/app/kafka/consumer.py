@@ -1,16 +1,15 @@
 import json
 import logging
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 
 from aiokafka import AIOKafkaConsumer, ConsumerRecord
-from pydantic import BaseModel, ValidationError
-
 from app.config import settings
 from app.models.messages import (
     MessageEnvelope,
     TaskContentRetryPayload,
     TaskParsedPayload,
 )
+from pydantic import BaseModel, ValidationError
 
 logger = logging.getLogger(__name__)
 

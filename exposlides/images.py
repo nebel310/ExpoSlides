@@ -80,7 +80,12 @@ def illustrate_presentation(
                     )
                 print(f"[images] Генерация иллюстраций: {len(slots)}", flush=True)
                 template = json.loads(template_json.read_text(encoding="utf-8"))
-                colors = (template.get("theme") or {}).get("colors", {})
+                theme = (
+                    template.get("theme")
+                    or (template.get("tokens") or {}).get("theme")
+                    or {}
+                )
+                colors = theme.get("colors", {})
                 palette = ", ".join(
                     f"{key}: #{value}" for key, value in colors.items()
                     if key.startswith("accent") or key in {"dk1", "lt1"}

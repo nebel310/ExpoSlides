@@ -2,13 +2,9 @@ from __future__ import annotations
 
 import logging
 
-import grpc
-
 import file_service_pb2
 import file_service_pb2_grpc
-
-
-
+import grpc
 
 logger = logging.getLogger(__name__)
 

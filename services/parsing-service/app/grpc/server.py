@@ -3,10 +3,9 @@ from __future__ import annotations
 import logging
 
 import grpc
-from google.protobuf import empty_pb2
-
 import parser_service_pb2
 import parser_service_pb2_grpc
+from google.protobuf import empty_pb2
 
 logger = logging.getLogger(__name__)
 

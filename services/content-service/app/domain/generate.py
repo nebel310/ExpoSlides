@@ -26,6 +26,7 @@ async def generate_content(request: ContentGenerationRequest) -> ContentGenerati
     initial_state = ContentGraphState(
         presentation=presentation,
         script=request.script,
+        feedback=request.feedback,
         user_mapping=None,
         settings=GenerationSettings(),
     )
@@ -54,4 +55,9 @@ async def generate_content(request: ContentGenerationRequest) -> ContentGenerati
     }
 
     logger.info("Сгенерировано слайдов: %d", len(content))
-    return ContentGenerationResult(content=content, passed=True, reason=None)
+    return ContentGenerationResult(
+        content=content,
+        passed=True,
+        reason=None,
+        validation_report=result_state.validation.model_dump(),
+    )

@@ -104,6 +104,10 @@ STAGE_ERRORS = {
     ),
 }
 CONTENT_ERRORS = {
+    "configuration": (
+        "Настройки модели не подходят для генерации. Проверьте адрес сервиса "
+        "и выбранную модель в конфигурации."
+    ),
     "invalid_response": (
         "Модель Qwen вернула ответ в неподходящем формате. "
         "Не удалось исправить его автоматически. Запустите сборку ещё раз."
@@ -149,7 +153,9 @@ class APIError(Exception):
         self.status = status
 
 
-def inspect_template(data: bytes, name: str) -> dict[str, Any]:
+def inspect_template(
+    data: bytes, name: str, *, require_placeholders: bool = True,
+) -> dict[str, Any]:
     """Проверить ограниченный по размеру PPTX до чтения python-pptx."""
     if not data or len(data) > MAX_TEMPLATE_BYTES:
         raise APIError("Размер PPTX должен быть не больше 25 МБ.")
@@ -195,7 +201,7 @@ def inspect_template(data: bytes, name: str) -> dict[str, Any]:
                     ),
                 }
             )
-        if not any(slide["placeholder_count"] for slide in slides):
+        if require_placeholders and not any(slide["placeholder_count"] for slide in slides):
             raise APIError(
                 "В шаблоне нет текстовых заполнителей. "
                 "Добавьте заголовок или область текста через макет PowerPoint."

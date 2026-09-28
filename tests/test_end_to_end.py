@@ -125,6 +125,7 @@ def test_full_offline_pipeline_creates_ordered_editable_pptx(
     generated_payload = json.loads(content_json.read_text(encoding="utf-8"))
     result = PPTXPresentation(output_pptx)
 
+    assert parsed_payload["schema_version"] == "2.0.0"
     assert len(parsed_payload["slides"]) == 2
     assert list(generated_payload["content"]) == ["2", "1"]
     assert generated_payload["validation_report"] == {"ok": True, "issues": []}

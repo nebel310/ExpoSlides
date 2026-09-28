@@ -1,7 +1,9 @@
 import re
+from typing import Sequence
 
 from app.models.graph_state import GeneratedSlideContent, ValidationReport
 from app.models.presentation import PresentationData
+from app.utils.fact_grounding import semantic_content_issues
 from app.utils.grounding import (
     extract_fact_tokens,
     extract_significant_words,
@@ -29,6 +31,7 @@ class ContentValidator:
         content: dict[int, GeneratedSlideContent],
         slide_indices: set[int] | None = None,
         source_text: str | None = None,
+        required_messages: Sequence[str] | None = None,
     ) -> ValidationReport:
         """Проверка полноты и длины текста"""
         issues = []
@@ -119,6 +122,7 @@ class ContentValidator:
                 for slide_content in content.values()
                 for placeholder_text in slide_content.placeholders.values()
             )
+            issues.extend(semantic_content_issues(source_text, generated_text, required_messages))
             source_fact_tokens = extract_fact_tokens(source_text)
             generated_fact_tokens = extract_fact_tokens(generated_text)
             missing_fact_tokens = sorted(source_fact_tokens - generated_fact_tokens)

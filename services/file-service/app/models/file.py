@@ -6,8 +6,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 from ..database import Base
 
 
-
-
 class File(Base):
     __tablename__ = "files"
 

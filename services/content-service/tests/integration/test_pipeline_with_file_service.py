@@ -4,13 +4,11 @@ from uuid import uuid4
 
 import pytest
 from aiokafka import AIOKafkaConsumer
-
 from app.domain.contract import ContentGenerationResult
 from app.errors import ContentValidationError
 from app.kafka.consumer import KafkaConsumer
 from app.kafka.producer import KafkaProducer
 from app.services.content_pipeline import ContentPipeline
-
 from helpers import (
     KAFKA_BOOTSTRAP,
     PIPELINE_TIMEOUT,
@@ -109,7 +107,11 @@ async def test_pipeline_valid_generation_publishes_content_ready(
         content_file_id = data["payload"]["content_file_id"]
         content_bytes = await file_client.download_file(content_file_id)
         content = json.loads(content_bytes.decode("utf-8"))
-        assert content == STUB_CONTENT
+        assert content == {
+            "content": STUB_CONTENT,
+            "validation_report": None,
+            "error": None,
+        }
 
         assert len(domain_calls) == 1
         request = domain_calls[0]

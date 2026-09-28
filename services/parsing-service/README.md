@@ -7,12 +7,37 @@
 - Подписан на топик `task.created`, читает задачи на парсинг.
 - Скачивает PPTX-шаблон из file-service по `template_file_id`.
 - Разбирает шаблон и сохраняет структуру (`structure.json`) в file-service.
+- Выгружает бинарные ассеты (картинки, фоны, OLE-объекты) отдельными файлами в file-service, ссылки на них попадают в `assets`.
+- Вычисляет типографическую шкалу, сетку и композиционные паттерны из макетов.
+- Находит повторяющиеся компоненты и дедуплицирует ассеты по содержимому.
+- Проставляет `content_hash` слайдов для поиска дублей в аудите.
 - Публикует `task.parsed` с `structure_file_id`, чтобы следующие сервисы пайплайна могли продолжить работу.
 - При технической ошибке публикует `task.failed` со `stage = "parser"`.
 
-## Kafka API
+## Схема данных
 
-Порт не используется. Брокер: `kafka:9092` (KRaft). Сериализация — JSON.
+Результат парсинга версионирован полем `schema_version`. Текущая версия — **2.0.0**. Analyzer, Content Service, Composer и Audit должны проверять её перед работой и падать с понятной ошибкой на несовместимой версии. Схема описана в `app/models/presentation.py`.
+
+Для неизвестных шаблонов парсер обходит макеты всех мастеров, разрешает тему
+конкретного слайда и сохраняет её в `slides[].theme`, `layouts[].theme`, `masters[].theme`.
+Глобальные `tokens.theme` сохраняют роль темы по умолчанию. Индексы макетов и мастеров
+начинаются с 1. Композиционные паттерны учитывают расположение и размеры слотов,
+включая обычные текстовые блоки макетов; это детерминированная геометрическая
+эвристика, а не смысловая классификация дизайна.
+
+У каждого элемента дополнительно доступны `shape_id`, `shape_name` и `shape_path`
+(цепочка исходных shape IDs через вложенные группы). Поле `bbox` сохраняет исходную
+локальную систему координат, а `slide_bbox` содержит ограничивающую рамку на слайде
+в EMU с учётом масштаба, поворота и отражений групп. Полное дерево элементов макета
+находится в `layouts[].elements`, дерево декора мастера — в `masters[].elements`.
+`has_text_frame` и `default_text_style` сохраняют типографику пустых полей; цвет и
+начертание текста разрешаются по цепочке paragraph → layout → master. Эти необязательные поля расширяют контракт v2
+без изменения старых полей. Геометрическая рамка не доказывает отсутствие
+переполнения текста: для этого нужен аудит результата верстки.
+
+## Взаимодействие по Kafka
+
+Сервис не слушает порт для Kafka, только подключается к брокеру как клиент. Брокер: `kafka:9092` (KRaft). Сериализация — JSON.
 
 ### Общий конверт сообщения
 
@@ -40,6 +65,7 @@
 - Читает `task.created`, валидирует конверт и payload.
 - Скачивает PPTX-шаблон (`template_file_id`, последняя версия) из file-service.
 - Разбирает шаблон, загружает `structure.json` в file-service (`content_type = "application/json"`, `task_id` пробрасывается).
+- Загружает каждый ассет отдельным вызовом `UploadFile`, прописывает полученный `file_id` в `assets[].file_id`.
 - Публикует `task.parsed` с `structure_file_id`, `template_file_id`, `script_file_id`.
 - `attempt` из входящего конверта пробрасывается в исходящий без изменений.
 - Коммитит offset после публикации результата (или после `task.failed`).
@@ -68,51 +94,144 @@
 
 - `DownloadFile(file_id, version=0)` — скачать PPTX-шаблон.
 - `UploadFile(filename="structure.json", content, content_type="application/json", task_id, file_id=None)` — залить структуру.
+- `UploadFile(filename=<original_name>, content, content_type="image/png", task_id)` — залить каждый ассет. Имя файла и MIME берутся из метаданных картинки, `file_id` в ответе прописывается в `assets[].file_id`.
+- `DeleteFile(file_id)` — используется только в тестах.
 
 Между сервисами ходят только `file_id`, байты по Kafka не передаются.
 
 ## Формат structure.json
 
-Результат парсинга — сериализованная модель `Presentation`:
+Результат парсинга — сериализованная модель `Presentation` схемы `2.0.0`:
 
-```
+```json
 {
-  "source_path": "...",
+  "schema_version": "2.0.0",
   "file_type": "pptx",
-  "slide_width": 9144000,
+  "slide_width": 12192000,
   "slide_height": 6858000,
+  "tokens": {
+    "theme": {
+      "colors": { "dk1": "000000", "accent1": "5B9BD5" },
+      "fonts": { "major": "Segoe UI Light", "minor": "Segoe UI" },
+      "all_fonts": ["Segoe UI", "Segoe UI Light"]
+    },
+    "typography": {
+      "entries": [
+        { "size_pt": 48.0, "role": "display", "occurrences": 1 },
+        { "size_pt": 11.0, "role": "body", "occurrences": 90 }
+      ],
+      "min_pt": 11.0,
+      "max_pt": 48.0
+    },
+    "grid": {
+      "margin_left": 521207,
+      "margin_right": 543474,
+      "column_positions": [502920, 4663440],
+      "row_positions": [457200, 2560320]
+    }
+  },
+  "patterns": [
+    {
+      "id": "pattern-1",
+      "name": "content+date+footer+slide_number+title",
+      "layout_indices": [2],
+      "slots": [
+        { "kind": "title", "bbox": { "left": 521207, "top": 448056, "width": 6877119, "height": 640080 }, "idx": 0 },
+        { "kind": "content", "bbox": { "left": 539496, "top": 1435608, "width": 4416552, "height": 3977640 }, "idx": 10 }
+      ]
+    }
+  ],
+  "components": [
+    {
+      "id": "component-1",
+      "signature": "image|661940|661940|RECTANGLE||122f15f4",
+      "element_template": { "id": "slide-9-shape-8", "type": "image" },
+      "occurrences": [
+        { "slide_index": 9, "element_id": "slide-9-shape-8" },
+        { "slide_index": 9, "element_id": "slide-9-shape-7" }
+      ]
+    }
+  ],
+  "masters": [
+    { "index": 1, "name": "", "layout_indices": [1, 2, 3] }
+  ],
   "slides": [
     {
       "index": 1,
       "layout_type": "title",
-      "layout_name": "Title Slide",
+      "layout_name": "Титульный слайд",
       "layout_index": 1,
-      "placeholder_type": "TITLE",
+      "pattern_id": "pattern-1",
       "elements": [
         {
           "id": "slide-1-shape-2",
           "type": "text",
-          "bbox": { "left": 0, "top": 0, "width": 0, "height": 0 },
-          "z_order": 1,
-          "placeholder_type": "TITLE",
+          "bbox": { "left": 838200, "top": 1164324, "width": 10515600, "height": 2387600 },
+          "z_order": 2,
+          "placeholder_kind": "title",
           "placeholder_idx": 0,
-          "placeholder_name": "Title 1",
+          "placeholder_name": "Заголовок 1",
           "text": {
-            "paragraphs": [...],
-            "full_text": "..."
-          }
+            "paragraphs": [
+              {
+                "level": 0,
+                "bullet": false,
+                "runs": [
+                  {
+                    "text": "Добро пожаловать!",
+                    "style": {
+                      "font_name": "Segoe UI Light",
+                      "size_pt": 48.0,
+                      "color_token": "bg1"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "hidden": false,
+          "is_background": false
         }
       ],
-      "background": { "fill_type": "1", "color_hex": "FFFFFF" },
-      "notes": null
+      "background": { "kind": "neutral", "fill": { "type": "none", "gradient_stops": [] } },
+      "content_hash": "8174891c8903b15b"
     }
   ],
-  "layouts": [...],
-  "theme": { "colors": {...}, "fonts": {...} }
+  "layouts": [
+    {
+      "name": "Титульный слайд",
+      "index": 1,
+      "layout_type": "title",
+      "placeholders": [
+        { "kind": "title", "name": "Заголовок 1", "idx": 0, "bbox": { "left": 521208, "top": 448056, "width": 6876288, "height": 640080 } }
+      ],
+      "background": { "kind": "neutral", "fill": { "type": "none", "gradient_stops": [] } }
+    }
+  ],
+  "assets": [
+    {
+      "asset_id": "200d8254e0739676",
+      "content_type": "image/png",
+      "size_bytes": 869797,
+      "original_name": "image.png",
+      "file_id": null
+    }
+  ]
 }
 ```
 
-Извлекаются: слайды, layout'ы, тема (цвета и шрифты), текстовые элементы с параграфами/runs и стилями, таблицы, изображения, placeholder'ы, z-order, фон, заметки.
+Что извлекается:
+
+- **Слайды** — элементы, `layout_index`, `pattern_id`, `content_hash` для поиска дублей, флаг `hidden` для элементов за пределами слайда, `is_background` для полноэкранных картинок.
+- **Элементы** — текст с параграфами и runs (шрифт, кегль, bold/italic/underline, цвет в HEX и токен темы, выравнивание, интервал, маркеры, гиперссылки), таблицы с объединениями ячеек, картинки с `asset_id` и метаданными, диаграммы (`chart`), SmartArt (`smartart`), группы (`group`), коннекторы (`connector`), OLE-объекты, автофигуры с геометрией, заливки (solid/gradient/pattern/picture), обводки, повороты.
+- **Layout'ы** — только placeholder'ы и фон, без полного дерева элементов.
+- **Тема** — палитра цветов и шрифты major/minor.
+- **Типографическая шкала** — вычисленные размеры шрифтов с ролями (`display`, `title`, `body` и т.д.).
+- **Сетка** — вычисленные поля и позиции колонок по placeholder'ам макетов.
+- **Паттерны** — группы макетов с одинаковой сигнатурой placeholder'ов.
+- **Компоненты** — повторяющиеся элементы на 2+ слайдах.
+- **Ассеты** — дедуплицированные по SHA-256 байты картинок, фонов, OLE-объектов. Загружаются в file-service отдельно, `file_id` заполняется пайплайном после загрузки.
+- **Masters** — список с привязкой к макетам.
 
 ## Переменные окружения
 
@@ -127,16 +246,17 @@ FILE_SERVICE_GRPC_PORT=50051
 PARSER_SERVICE_PORT=50052
 ```
 
-Для e2e-тестов дополнительно (значения по умолчанию подходят для локального запуска):
+Для интеграционных и e2e-тестов значения по умолчанию уже подходят для локального запуска. При необходимости переопредели:
 
 ```
-E2E_FILE_SERVICE_HOST=127.0.0.1
-E2E_FILE_SERVICE_PORT=50051
-E2E_PARSER_SERVICE_HOST=127.0.0.1
-E2E_PARSER_SERVICE_PORT=50052
-E2E_KAFKA_BOOTSTRAP=localhost:9093
-E2E_TOPIC_TASK_PARSED=task.parsed
-E2E_TOPIC_TASK_FAILED=task.failed
+FILE_SERVICE_GRPC_HOST=localhost
+FILE_SERVICE_GRPC_PORT=50051
+PARSER_SERVICE_GRPC_HOST=localhost
+PARSER_SERVICE_GRPC_PORT=50052
+KAFKA_EXTERNAL_BOOTSTRAP=localhost:9093
+KAFKA_TOPIC_TASK_CREATED=task.created
+KAFKA_TOPIC_TASK_PARSED=task.parsed
+KAFKA_TOPIC_TASK_FAILED=task.failed
 ```
 
 ## Запуск
@@ -166,11 +286,29 @@ uv run python -m grpc_tools.protoc \
 
 ## Тесты
 
+Все тесты делятся на три группы.
+
+**Юнит** — не требуют инфраструктуры:
+
 ```bash
-uv run pytest services/parsing-service/tests -v
+uv run pytest services/parsing-service/tests -v --ignore=services/parsing-service/tests/integration --ignore=services/parsing-service/tests/e2e
 ```
 
-Требуют запущенных контейнеров `kafka`, `file-service`, `minio`, `postgres` для integration/e2e. Unit-тесты проходят без инфраструктуры.
+**Интеграционные** — требуют `file-service`, `minio`, `postgres`:
+
+```bash
+docker compose up -d file-service minio postgres
+uv run pytest services/parsing-service/tests/integration -v
+```
+
+**E2E** — требуют полный стек (`kafka`, `file-service`, `parser-service`, `minio`, `postgres`):
+
+```bash
+docker compose up -d
+uv run pytest services/parsing-service/tests/e2e -v
+```
+
+Если инфраструктура недоступна, соответствующие тесты автоматически скипаются с понятным сообщением. Маркеры `integration` и `e2e` зарегистрированы в корневом `pyproject.toml`.
 
 ## Пример использования (Python)
 
@@ -241,8 +379,9 @@ stub = parser_service_pb2_grpc.ParserServiceStub(channel)
 print(stub.HealthCheck(empty_pb2.Empty()).status)
 ```
 
-CLI-режим для ручной отладки парсинга без Kafka (только внутри контейнера/локально):
+CLI-режим для ручной отладки парсинга без Kafka (запускать из `services/parsing-service`):
 
 ```bash
+cd services/parsing-service
 uv run python -m app.main --input-pptx test.pptx --output-json output.json
 ```

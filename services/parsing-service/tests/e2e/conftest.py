@@ -1,67 +1,91 @@
 from __future__ import annotations
 
+import asyncio
 import os
-from collections.abc import AsyncIterator
-from io import BytesIO
+from typing import AsyncIterator, Awaitable, Callable
 from uuid import uuid4
 
+import file_service_pb2_grpc
 import grpc
+import parser_service_pb2_grpc
 import pytest
 import pytest_asyncio
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
-from pptx import Presentation as PPTXPresentation
-
+from aiokafka.admin import AIOKafkaAdminClient
 from app.grpc.file_service_client import FileServiceClient
+from google.protobuf import empty_pb2
 
-FILE_SERVICE_HOST = os.environ.get("E2E_FILE_SERVICE_HOST", "127.0.0.1")
-FILE_SERVICE_PORT = int(os.environ.get("E2E_FILE_SERVICE_PORT", "50051"))
-PARSER_SERVICE_HOST = os.environ.get("E2E_PARSER_SERVICE_HOST", "127.0.0.1")
-PARSER_SERVICE_PORT = int(os.environ.get("E2E_PARSER_SERVICE_PORT", "50052"))
-KAFKA_BOOTSTRAP_SERVERS = os.environ.get("E2E_KAFKA_BOOTSTRAP", "localhost:9093")
-
-TOPIC_PARSED = os.environ.get("E2E_TOPIC_TASK_PARSED", "task.parsed")
-TOPIC_FAILED = os.environ.get("E2E_TOPIC_TASK_FAILED", "task.failed")
+# ---------- Env ----------
 
 
-def pytest_configure(config: pytest.Config) -> None:
-    """Регистрирует маркер e2e"""
-    config.addinivalue_line(
-        "markers",
-        "e2e: тесты, требующие запущенные kafka, file-service и parser-service",
-    )
+FILE_SERVICE_HOST = os.environ.get("FILE_SERVICE_GRPC_HOST", "localhost")
+FILE_SERVICE_PORT = int(os.environ.get("FILE_SERVICE_GRPC_PORT", "50051"))
+FILE_SERVICE_TARGET = f"{FILE_SERVICE_HOST}:{FILE_SERVICE_PORT}"
+
+PARSER_SERVICE_HOST = os.environ.get("PARSER_SERVICE_GRPC_HOST", "localhost")
+PARSER_SERVICE_PORT = int(os.environ.get("PARSER_SERVICE_GRPC_PORT", "50052"))
+PARSER_SERVICE_TARGET = f"{PARSER_SERVICE_HOST}:{PARSER_SERVICE_PORT}"
+
+KAFKA_BOOTSTRAP = os.environ.get("KAFKA_EXTERNAL_BOOTSTRAP", "localhost:9093")
+
+TOPIC_CREATED = os.environ.get("KAFKA_TOPIC_TASK_CREATED", "task.created")
+TOPIC_PARSED = os.environ.get("KAFKA_TOPIC_TASK_PARSED", "task.parsed")
+TOPIC_FAILED = os.environ.get("KAFKA_TOPIC_TASK_FAILED", "task.failed")
+
+PPTX_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+)
+
+MESSAGE_TIMEOUT_SEC = 30.0
 
 
-def _grpc_reachable(host: str, port: int) -> bool:
-    """Проверяет доступность gRPC-порта коротким подключением"""
+# ---------- Healthchecks ----------
+
+
+async def _file_service_alive() -> bool:
+    channel = grpc.aio.insecure_channel(FILE_SERVICE_TARGET)
     try:
-        channel = grpc.insecure_channel(f"{host}:{port}")
-        grpc.channel_ready_future(channel).result(timeout=5)
-        channel.close()
+        stub = file_service_pb2_grpc.FileServiceStub(channel)
+        await asyncio.wait_for(stub.HealthCheck(empty_pb2.Empty()), timeout=3.0)
+        return True
+    except Exception:
+        return False
+    finally:
+        await channel.close()
+
+
+async def _parser_service_alive() -> bool:
+    channel = grpc.aio.insecure_channel(PARSER_SERVICE_TARGET)
+    try:
+        stub = parser_service_pb2_grpc.ParserServiceStub(channel)
+        await asyncio.wait_for(stub.HealthCheck(empty_pb2.Empty()), timeout=3.0)
+        return True
+    except Exception:
+        return False
+    finally:
+        await channel.close()
+
+
+async def _kafka_alive() -> bool:
+    try:
+        admin = AIOKafkaAdminClient(bootstrap_servers=KAFKA_BOOTSTRAP)
+        await asyncio.wait_for(admin.start(), timeout=5.0)
+        await admin.close()
         return True
     except Exception:
         return False
 
 
-@pytest.fixture(scope="session")
-def e2e_environment() -> None:
-    """Скипает e2e-тесты, если нужные сервисы не подняты"""
-    missing: list[str] = []
-    if not _grpc_reachable(FILE_SERVICE_HOST, FILE_SERVICE_PORT):
-        missing.append(f"file-service ({FILE_SERVICE_HOST}:{FILE_SERVICE_PORT})")
-    if not _grpc_reachable(PARSER_SERVICE_HOST, PARSER_SERVICE_PORT):
-        missing.append(f"parser-service ({PARSER_SERVICE_HOST}:{PARSER_SERVICE_PORT})")
-    if missing:
-        pytest.skip(
-            "E2E требует запущенных сервисов: "
-            + ", ".join(missing)
-            + "; подними `docker compose up -d`",
-        )
+# ---------- Base fixtures ----------
 
 
 @pytest_asyncio.fixture
-async def file_client(e2e_environment: None) -> AsyncIterator[FileServiceClient]:
-    """Подключённый FileServiceClient с авто-закрытием"""
-    client = FileServiceClient(host=FILE_SERVICE_HOST, port=FILE_SERVICE_PORT)
+async def file_client() -> AsyncIterator[FileServiceClient]:
+    """Реальный клиент file-service (skip, если сервис лежит)"""
+    if not await _file_service_alive():
+        pytest.skip(f"file-service недоступен на {FILE_SERVICE_TARGET}")
+
+    client = FileServiceClient(FILE_SERVICE_HOST, FILE_SERVICE_PORT)
     await client.connect()
     try:
         yield client
@@ -70,48 +94,104 @@ async def file_client(e2e_environment: None) -> AsyncIterator[FileServiceClient]
 
 
 @pytest_asyncio.fixture
+async def parser_service_ready() -> None:
+    """Skip, если parser-service или Kafka недоступны"""
+    if not await _parser_service_alive():
+        pytest.skip(f"parser-service недоступен на {PARSER_SERVICE_TARGET}")
+    if not await _kafka_alive():
+        pytest.skip(f"Kafka недоступна на {KAFKA_BOOTSTRAP}")
+
+
+@pytest_asyncio.fixture
 async def kafka_producer() -> AsyncIterator[AIOKafkaProducer]:
-    """Продюсер для публикации в task.created"""
-    producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
-    try:
-        await producer.start()
-    except Exception as error:
-        pytest.skip(f"Kafka недоступна на {KAFKA_BOOTSTRAP_SERVERS}: {error}")
+    producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP)
+    await producer.start()
     try:
         yield producer
     finally:
         await producer.stop()
 
 
+# ---------- Фабрики ----------
+
+
+UploadFactory = Callable[..., Awaitable[str]]
+ConsumerFactory = Callable[[list[str]], Awaitable[AIOKafkaConsumer]]
+
+
 @pytest_asyncio.fixture
-async def results_consumer() -> AsyncIterator[AIOKafkaConsumer]:
-    """Консьюмер task.parsed + task.failed с уникальной группой"""
-    consumer = AIOKafkaConsumer(
-        TOPIC_PARSED,
-        TOPIC_FAILED,
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-        group_id=f"parser-service-e2e-{uuid4().hex}",
-        auto_offset_reset="latest",
-        enable_auto_commit=False,
-    )
+async def uploaded_pptx_factory(
+    file_client: FileServiceClient,
+) -> AsyncIterator[UploadFactory]:
+    """Фабрика: загружает pptx и удаляет после теста"""
+    created: list[str] = []
+
+    async def _upload(
+        content: bytes,
+        task_id: str = "e2e-test",
+        filename: str = "template.pptx",
+    ) -> str:
+        file_id = await file_client.upload_file(
+            filename=filename,
+            content=content,
+            content_type=PPTX_CONTENT_TYPE,
+            task_id=task_id,
+        )
+        created.append(file_id)
+        return file_id
+
     try:
-        await consumer.start()
-    except Exception as error:
-        pytest.skip(f"Kafka недоступна на {KAFKA_BOOTSTRAP_SERVERS}: {error}")
-    try:
-        yield consumer
+        yield _upload
     finally:
-        await consumer.stop()
+        for file_id in created:
+            try:
+                await file_client.delete_file(file_id)
+            except Exception:
+                pass
 
 
-@pytest.fixture
-def simple_pptx_bytes() -> bytes:
-    """Минимальный валидный pptx в байтах"""
-    prs = PPTXPresentation()
-    slide = prs.slides.add_slide(prs.slide_layouts[0])
-    slide.shapes.title.text = "E2E Test"
-    if len(slide.placeholders) > 1:
-        slide.placeholders[1].text = "Parser Service"
-    buffer = BytesIO()
-    prs.save(buffer)
-    return buffer.getvalue()
+@pytest_asyncio.fixture
+async def kafka_consumer_factory() -> AsyncIterator[ConsumerFactory]:
+    """Фабрика: создаёт consumer с уникальной группой на нужные топики"""
+    consumers: list[AIOKafkaConsumer] = []
+
+    async def _make(topics: list[str]) -> AIOKafkaConsumer:
+        consumer = AIOKafkaConsumer(
+            *topics,
+            bootstrap_servers=KAFKA_BOOTSTRAP,
+            group_id=f"parser-e2e-{uuid4().hex}",
+            auto_offset_reset="latest",
+            enable_auto_commit=False,
+        )
+        await consumer.start()
+        consumers.append(consumer)
+        return consumer
+
+    try:
+        yield _make
+    finally:
+        for consumer in consumers:
+            try:
+                await consumer.stop()
+            except Exception:
+                pass
+
+
+@pytest_asyncio.fixture
+async def structure_file_cleanup(
+    file_client: FileServiceClient,
+) -> AsyncIterator[Callable[[str], Awaitable[None]]]:
+    """Позволяет тесту зарегистрировать file_id структуры для удаления"""
+    created: list[str] = []
+
+    async def _track(file_id: str) -> None:
+        created.append(file_id)
+
+    try:
+        yield _track
+    finally:
+        for file_id in created:
+            try:
+                await file_client.delete_file(file_id)
+            except Exception:
+                pass

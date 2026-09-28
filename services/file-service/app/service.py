@@ -1,9 +1,6 @@
 import uuid
 
 import grpc
-from google.protobuf.empty_pb2 import Empty
-from sqlalchemy import func, select
-
 from file_service_pb2 import (
     DeleteFileRequest,
     DownloadFileRequest,
@@ -15,14 +12,14 @@ from file_service_pb2 import (
     UploadFileResponse,
 )
 from file_service_pb2_grpc import FileServiceServicer
+from google.protobuf.empty_pb2 import Empty
+from sqlalchemy import func, select
 
 from .config import settings
 from .database import async_session
 from .minio_storage import MinioStorage
 from .models import File
 from .validators import get_extension_for_type, validate_file
-
-
 
 
 class FileService(FileServiceServicer):
