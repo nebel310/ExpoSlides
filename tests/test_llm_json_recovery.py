@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 CONTENT_SERVICE_ROOT = Path(__file__).resolve().parents[1] / "services" / "content-service"
@@ -89,8 +90,8 @@ def test_empty_placeholder_retries_before_returning(monkeypatch, service_importe
     result = asyncio.run(llm.llm_client.generate_json_with_schema("Источник", schema))
     assert result == {"28": "Модель выбирает инструменты"}
     assert len(calls) == 2
-    assert "nonblank text" in calls[1].messages[0].content
-    assert json.dumps({"28": invalid}, ensure_ascii=False) in calls[1].messages[0].content
+    assert "nonblank text" in calls[1]["messages"][0]["content"]
+    assert json.dumps({"28": invalid}, ensure_ascii=False) in calls[1]["messages"][0]["content"]
 
 
 def test_length_retry_includes_rejected_value(monkeypatch, service_importer):
@@ -112,13 +113,13 @@ def test_length_retry_includes_rejected_value(monkeypatch, service_importer):
     }
     result = asyncio.run(llm.llm_client.generate_json_with_schema("Источник", schema))
     assert result == {"0": "Коротко"}
-    correction = calls[1].messages[0].content
+    correction = calls[1]["messages"][0]["content"]
     assert "Слишком длинный заголовок" in correction
     assert "maxLength 10" in correction
     assert "<REJECTED_RESPONSE>" in correction
     assert '"max_words": 1' in correction
     assert '"target_chars": 5' in correction
-    wire = calls[0].response_format.schema_["properties"]["0"]
+    wire = calls[0]["response_format"]["json_schema"]["schema"]["properties"]["0"]
     assert "maxLength" not in wire
     assert "Максимум 10 символов" in wire["description"]
     assert wire["minLength"] == 1
@@ -140,7 +141,7 @@ def test_json_retry_includes_unparseable_response(monkeypatch, service_importer)
     monkeypatch.setattr(llm.llm_client.client, "chat", fake_chat)
     result = asyncio.run(llm.llm_client.generate_json_with_schema("Источник", {"type": "object"}))
     assert result == {"0": "текст"}
-    assert '<REJECTED_RESPONSE>\n{"0": "текст"\n' in calls[1].messages[0].content
+    assert '<REJECTED_RESPONSE>\n{"0": "текст"\n' in calls[1]["messages"][0]["content"]
 
 
 def test_generation_schema_preserves_structure_and_original(service_importer):
@@ -193,20 +194,21 @@ def test_field_retry_preserves_valid_values_and_requests_only_invalid(monkeypatc
     }
     result = asyncio.run(llm.llm_client.generate_json_with_schema("Источник", schema))
     assert result == {"0": "Готово", "28": "Кратко"}
-    retry_schema = calls[1].response_format.schema_
+    retry_schema = calls[1]["response_format"]["json_schema"]["schema"]
     assert set(retry_schema["properties"]) == {"28"}
     assert retry_schema["required"] == ["28"]
     assert retry_schema["additionalProperties"] is False
     assert schema["required"] == ["0", "28"]
 
 
-@pytest.mark.parametrize("status, recover, expected_calls", [(502, True, 2), (503, False, 3), (401, False, 1)])
+@pytest.mark.parametrize("status, recover, expected_calls", [
+    (429, True, 2), (429, False, 3), (502, True, 2), (503, False, 3), (401, False, 1),
+])
 def test_server_retry_is_bounded_and_does_not_retry_auth(
     monkeypatch, service_importer, status, recover, expected_calls,
 ):
     llm = service_importer(CONTENT_SERVICE_ROOT, "app.chains.llm")
     errors = importlib.import_module("app.errors")
-    from gigachat.exceptions import AuthenticationError, ServerError
 
     calls = []
     delays = []
@@ -215,8 +217,10 @@ def test_server_retry_is_bounded_and_does_not_retry_auth(
         calls.append(chat)
         if recover and len(calls) > 1:
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"0":"OK"}'))])
-        error = AuthenticationError if status == 401 else ServerError
-        raise error("https://example.test", status, b"test failure", None)
+        request = httpx.Request("POST", "https://example.test")
+        raise httpx.HTTPStatusError(
+            "test failure", request=request, response=httpx.Response(status, request=request),
+        )
 
     async def fake_sleep(delay):
         delays.append(delay)

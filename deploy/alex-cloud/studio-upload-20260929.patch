@@ -1,0 +1,981 @@
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -26,7 +26,8 @@
+ function readFile(file: File): Promise<string> {
+   return new Promise((resolve, reject) => {
+     const reader = new FileReader();
+-    reader.onerror = () => reject(new Error("Не удалось прочитать файл."));
++    reader.onerror = () => reject(new Error("Не удалось прочитать файл. Сохраните PPTX на устройство и выберите его ещё раз."));
++    reader.onabort = () => reject(new Error("Чтение файла отменено. Выберите PPTX ещё раз."));
+     reader.onload = () => resolve(String(reader.result).split(",")[1]);
+     reader.readAsDataURL(file);
+   });
+@@ -43,6 +44,9 @@
+   const [ready, setReady] = useState(false);
+   const [restoring, setRestoring] = useState(true);
+   const [busyAction, setBusyAction] = useState(false);
++  const [uploading, setUploading] = useState(false);
++  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
++  const [uploadName, setUploadName] = useState("");
+   const [connectionLostId, setConnectionLostId] = useState<string | null>(null);
+   const [storyAvailable, setStoryAvailable] = useState<boolean | null>(null);
+   const [connectAttempt, setConnectAttempt] = useState(0);
+@@ -54,7 +58,8 @@
+   const textRef = useRef<HTMLInputElement>(null);
+   const running = !!job && activeStatus(job.status);
+   const busy = busyAction || !ready || restoring;
+-  const generationBusy = busy || !!activeJobId || running;
++  const uploadBusy = busy || uploading;
++  const generationBusy = uploadBusy || !!activeJobId || running;
+ 
+   function failure(value: unknown) {
+     setError(value instanceof Error ? value.message : "Не удалось выполнить действие.");
+@@ -162,15 +167,17 @@
+   }, [activeJobId, job?.id]);
+ 
+   async function upload(file?: File) {
+-    if (!file || busy) return;
++    if (!file || uploadBusy) return;
+     if (!/\.pptx$/i.test(file.name) || !file.size || file.size > 25 * 1024 * 1024) {
+       setError("Выберите PPTX размером до 25 МБ."); return;
+     }
+-    setBusyAction(true); setError("");
++    setUploading(true); setUploadProgress(null); setUploadName(file.name); setError("");
+     try {
+-      setTemplate(await api.post<Template>("/api/templates", { name: file.name, data: await readFile(file) }));
++      const data = await readFile(file);
++      setUploadProgress(0);
++      setTemplate(await api.uploadTemplate<Template>({ name: file.name, data }, setUploadProgress));
+     } catch (value) { failure(value); }
+-    finally { setBusyAction(false); if (uploadRef.current) uploadRef.current.value = ""; }
++    finally { setUploading(false); if (uploadRef.current) uploadRef.current.value = ""; }
+   }
+   async function importText(file?: File) {
+     if (!file || busy) return;
+@@ -216,6 +223,7 @@
+     finally { setBusyAction(false); }
+   }
+   function editMaterials() {
++    if (uploading) return;
+     setRequest(simpleDesignRequest(job?.request));
+     setTemplate(job?.template ?? null);
+     navigate("upload");
+@@ -237,9 +245,9 @@
+         <form onSubmit={event => { event.preventDefault(); void generate(); }}>
+           <div className="upload-grid"><section aria-labelledby="template-label">
+             <h2 className="field-label" id="template-label"><span className="field-number" aria-hidden="true">01</span>Шаблон презентации</h2>
+-            <input ref={uploadRef} type="file" accept=".pptx" hidden aria-label="Файл шаблона" onChange={event => upload(event.target.files?.[0])} />
+-            <button type="button" className={`upload-zone ${dragging ? "dragging" : ""} ${template ? "loaded" : ""}`} disabled={busy}
+-              onClick={() => uploadRef.current?.click()} onDragOver={event => { event.preventDefault(); if (!busy) setDragging(true); }}
++            <input ref={uploadRef} type="file" accept=".pptx" hidden disabled={uploadBusy} aria-label="Файл шаблона" onChange={event => upload(event.target.files?.[0])} />
++            <button type="button" className={`upload-zone ${dragging ? "dragging" : ""} ${template ? "loaded" : ""}`} disabled={uploadBusy} aria-busy={uploading}
++              onClick={() => uploadRef.current?.click()} onDragOver={event => { event.preventDefault(); if (!uploadBusy) setDragging(true); }}
+               onDragLeave={() => setDragging(false)} onDrop={event => { event.preventDefault(); setDragging(false); if (event.dataTransfer.files.length !== 1) setError("Выберите один шаблон."); else void upload(event.dataTransfer.files[0]); }}>
+               <span className="upload-icon" aria-hidden="true"><svg viewBox="0 0 220 144" fill="none">
+                 <rect x="36" y="18" width="144" height="96" rx="5" fill="#252820" transform="rotate(-12 108 66)" />
+@@ -250,9 +258,13 @@
+                 <circle cx="147" cy="94" r="14" fill="#DA5738" />
+                 <path d="M147 100V88M142 93L147 88L152 93" stroke="#FFFEF9" strokeWidth="1.8" />
+               </svg></span>
+-              <strong className="file-name">{template?.name || "Выберите или перетащите файл"}</strong>
++              <strong className="file-name">{uploading ? uploadName : template?.name || "Выберите или перетащите файл"}</strong>
+               <span className="file-meta">{template ? "Нажмите, чтобы заменить" : "PPTX · до 25 МБ"}</span>
+             </button>
++            {uploading && <div role="status" aria-live="polite">
++              <p>{uploadProgress === null ? "Читаем файл…" : uploadProgress < 100 ? `Загружаем шаблон: ${uploadProgress}%` : "Проверяем презентацию…"} Можно добавлять текст.</p>
++              <progress aria-label="Загрузка шаблона" max={100} value={uploadProgress ?? undefined} />
++            </div>}
+           </section><section aria-labelledby="script-label">
+             <div className="input-heading"><label className="field-label" id="script-label" htmlFor="script"><span className="field-number" aria-hidden="true">02</span>Содержание</label><button type="button" className="text-button" disabled={busy} onClick={() => textRef.current?.click()}>Загрузить текст</button></div>
+             <input ref={textRef} type="file" accept=".txt" hidden aria-label="Файл с текстом" onChange={event => importText(event.target.files?.[0])} />
+--- a/frontend/src/api.ts
++++ b/frontend/src/api.ts
+@@ -15,7 +15,10 @@
+ }
+ 
+ export class StudioApi {
+-  constructor(private transport: typeof fetch = globalThis.fetch.bind(globalThis)) {}
++  constructor(
++    private transport: typeof fetch = globalThis.fetch.bind(globalThis),
++    private createUpload: () => XMLHttpRequest = () => new XMLHttpRequest(),
++  ) {}
+ 
+   async get<T>(path: string, signal?: AbortSignal): Promise<T> {
+     return this.request<T>(path, undefined, signal);
+@@ -28,6 +31,34 @@
+     return this.request<T>(path, body, signal, session.token);
+   }
+ 
++  async uploadTemplate<T>(body: { name: string; data: string }, progress: (percent: number) => void): Promise<T> {
++    const session = await this.get<{ token: string }>("/api/session");
++    if (!session.token) throw new ApiError("Не удалось открыть сессию. Обновите страницу.", 403);
++    return new Promise<T>((resolve, reject) => {
++      const xhr = this.createUpload();
++      xhr.open("POST", "/api/templates");
++      // Большой PPTX на медленном соединении не укладывается в обычные 45 секунд.
++      xhr.timeout = 300000;
++      xhr.setRequestHeader("Content-Type", "application/json");
++      xhr.setRequestHeader("X-Session-Token", session.token);
++      xhr.upload.onprogress = event => {
++        if (event.lengthComputable) progress(Math.min(100, Math.floor(event.loaded / event.total * 100)));
++      };
++      xhr.onload = () => {
++        let data: unknown;
++        try { data = JSON.parse(xhr.responseText); }
++        catch { reject(new ApiError("Сервер вернул неожиданный ответ. Обновите страницу.", xhr.status)); return; }
++        if (xhr.status < 200 || xhr.status >= 300) reject(new ApiError(serverMessage(data), xhr.status));
++        else resolve(data as T);
++      };
++      xhr.onerror = () => reject(new ApiError("Не удалось загрузить шаблон: нет связи с сервером. Текст сохранён в форме.", 0));
++      xhr.ontimeout = () => reject(new ApiError("Загрузка заняла больше пяти минут. Проверьте соединение или уменьшите файл. Текст сохранён в форме.", 0));
++      xhr.onabort = () => reject(new ApiError("Загрузка шаблона отменена. Текст сохранён в форме.", 0));
++      // Повторная отправка при потере ответа могла бы создать второй шаблон.
++      xhr.send(JSON.stringify(body));
++    });
++  }
++
+   private async request<T>(path: string, body?: unknown, signal?: AbortSignal, token?: string): Promise<T> {
+     const controller = new AbortController();
+     const abort = () => controller.abort();
+@@ -36,7 +67,7 @@
+     const timer = setTimeout(abort, 45000);
+     try {
+       const response = await this.transport(path, {
+-        method: body === undefined ? "GET" : "POST", credentials: "same-origin",
++        method: body === undefined ? "GET" : "POST", credentials: "same-origin", cache: "no-store",
+         headers: body === undefined ? {} : { "Content-Type": "application/json", "X-Session-Token": token! },
+         body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal,
+       });
+--- a/frontend/tests/studio.test.tsx
++++ b/frontend/tests/studio.test.tsx
+@@ -369,3 +369,83 @@
+     assert.equal(slideCountLabel(count), label);
+   }
+ });
++
++class FakeUpload {
++  timeout = 0;
++  status = 201;
++  responseText = '{"id":"uploaded"}';
++  upload = { onprogress: null as null | ((event: { lengthComputable: boolean; loaded: number; total: number }) => void) };
++  onload: (() => void) | null = null;
++  onerror: (() => void) | null = null;
++  ontimeout: (() => void) | null = null;
++  onabort: (() => void) | null = null;
++  headers: Record<string, string> = {};
++  body = "";
++  sent = 0;
++  open(method: string, path: string) { assert.equal(method, "POST"); assert.equal(path, "/api/templates"); }
++  setRequestHeader(key: string, value: string) { this.headers[key] = value; }
++  send(body: string) { this.body = body; this.sent++; }
++}
++
++function uploadApi(xhr: FakeUpload) {
++  let requests = 0;
++  const client = new StudioApi((async (path, options) => {
++    requests++;
++    assert.equal(path, "/api/session");
++    assert.equal(options?.cache, "no-store");
++    return Response.json({ token: "fresh-token" });
++  }) as typeof fetch, () => xhr as unknown as XMLHttpRequest);
++  return { client, requests: () => requests };
++}
++const flushUpload = () => new Promise<void>(resolve => setImmediate(resolve));
++
++test("PPTX upload uses a separate deadline, fresh session and transfer progress", async () => {
++  const xhr = new FakeUpload();
++  const { client, requests } = uploadApi(xhr);
++  const progress: number[] = [];
++  const payload = { name: "Шаблон.pptx", data: "encoded" };
++  const pending = client.uploadTemplate(payload, value => progress.push(value));
++  await flushUpload();
++  assert.equal(xhr.timeout, 300000);
++  assert.equal(xhr.headers["X-Session-Token"], "fresh-token");
++  assert.deepEqual(JSON.parse(xhr.body), payload);
++  xhr.upload.onprogress!({ lengthComputable: true, loaded: 50, total: 100 });
++  xhr.upload.onprogress!({ lengthComputable: false, loaded: 80, total: 0 });
++  xhr.upload.onprogress!({ lengthComputable: true, loaded: 100, total: 100 });
++  xhr.onload!();
++  assert.deepEqual(await pending, { id: "uploaded" });
++  assert.deepEqual(progress, [50, 100]);
++  assert.equal(requests(), 1); assert.equal(xhr.sent, 1);
++});
++for (const event of ["onerror", "ontimeout", "onabort"] as const) {
++  test(`PPTX ${event} rejects without retrying`, async () => {
++    const xhr = new FakeUpload();
++    const { client, requests } = uploadApi(xhr);
++    const pending = client.uploadTemplate({ name: "a.pptx", data: "encoded" }, () => {});
++    const rejected = assert.rejects(pending, (error: unknown) => error instanceof ApiError && error.status === 0);
++    await flushUpload(); xhr[event]!(); await rejected;
++    assert.equal(xhr.sent, 1); assert.equal(requests(), 1);
++  });
++}
++for (const [status, response, message] of [
++  [403, '{"detail":"Сессия устарела"}', /Сессия устарела/],
++  [413, '{"detail":"Файл слишком большой"}', /слишком большой/],
++  [502, '<html>bad gateway</html>', /неожиданный ответ/],
++] as const) {
++  test(`PPTX server error ${status} remains visible`, async () => {
++    const xhr = new FakeUpload(); xhr.status = status; xhr.responseText = response;
++    const { client } = uploadApi(xhr);
++    const pending = client.uploadTemplate({ name: "a.pptx", data: "encoded" }, () => {});
++    const rejected = assert.rejects(pending, message);
++    await flushUpload(); xhr.onload!(); await rejected;
++    assert.equal(xhr.sent, 1);
++  });
++}
++test("missing session prevents PPTX transmission", async () => {
++  let created = false;
++  const client = new StudioApi((async () => Response.json({})) as typeof fetch, () => {
++    created = true; throw new Error("must not create upload");
++  });
++  await assert.rejects(client.uploadTemplate({ name: "a.pptx", data: "encoded" }, () => {}), /сессию/);
++  assert.equal(created, false);
++});
+--- /dev/null
++++ b/frontend/tests/upload-form.test.tsx
+@@ -0,0 +1,78 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { JSDOM } from "jsdom";
++import { act } from "react";
++import App from "../src/App";
++import { api } from "../src/api";
++
++for (const outcome of ["success", "failure"] as const) {
++  test(`text stays editable during upload and survives ${outcome}`, async () => {
++    const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost" });
++    const oldGet = api.get, oldUpload = api.uploadTemplate;
++    const original = new Map<string, PropertyDescriptor | undefined>();
++    for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document,
++      navigator: dom.window.navigator, FileReader: dom.window.FileReader, sessionStorage: dom.window.sessionStorage,
++      IS_REACT_ACT_ENVIRONMENT: true })) {
++      original.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
++      Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
++    }
++    api.get = (async (path: string) => path === "/api/session" ? { token: "test" } : { story: true }) as typeof api.get;
++    let resolveUpload!: (value: unknown) => void;
++    let rejectUpload!: (reason: Error) => void;
++    let uploads = 0;
++    api.uploadTemplate = (() => { uploads++; return new Promise<unknown>((resolve, reject) => {
++      resolveUpload = resolve; rejectUpload = reject;
++    }); }) as typeof api.uploadTemplate;
++    const { createRoot } = await import("react-dom/client");
++    const root = createRoot(dom.window.document.getElementById("root")!);
++    const changeFile = (label: string, file: unknown) => {
++      const input = dom.window.document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
++      Object.defineProperty(input, "files", { configurable: true, value: [file] });
++      input.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
++    };
++    try {
++      await act(async () => { root.render(<App />); });
++      await act(async () => {
++        changeFile("Файл шаблона", new dom.window.File(["pptx"], "template.pptx"));
++        for (let i = 0; i < 20 && !uploads; i++) await new Promise(resolve => setTimeout(resolve, 5));
++      });
++      assert.equal(uploads, 1);
++      const script = dom.window.document.querySelector<HTMLTextAreaElement>("#script")!;
++      assert.equal(script.disabled, false); assert.equal(script.readOnly, false);
++      const importButton = [...dom.window.document.querySelectorAll("button")].find(b => b.textContent === "Загрузить текст")!;
++      assert.equal(importButton.disabled, false);
++      assert.equal(dom.window.document.querySelector<HTMLButtonElement>(".upload-zone")!.disabled, true);
++      assert.equal(dom.window.document.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled, true);
++      await act(async () => {
++        changeFile("Файл с текстом", { name: "text.txt", size: 30,
++          arrayBuffer: async () => new TextEncoder().encode("Текст во время загрузки").buffer });
++      });
++      assert.equal(script.value, "Текст во время загрузки");
++      await act(async () => {
++        Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(script, "Дополненный текст");
++        script.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
++      });
++      await act(async () => {
++        changeFile("Файл шаблона", new dom.window.File(["other"], "second.pptx"));
++      });
++      assert.equal(uploads, 1);
++      await act(async () => {
++        if (outcome === "success") resolveUpload({ id: "uploaded", name: "template.pptx", slide_count: 1 });
++        else rejectUpload(new Error("Проверочная ошибка загрузки"));
++      });
++      assert.equal(script.value, "Дополненный текст");
++      assert.equal(script.disabled, false);
++      assert.equal(dom.window.document.querySelector<HTMLButtonElement>(".upload-zone")!.disabled, false);
++      assert.equal(dom.window.document.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled, outcome === "failure");
++      if (outcome === "failure") assert.match(dom.window.document.body.textContent!, /Проверочная ошибка/);
++    } finally {
++      await act(async () => root.unmount());
++      api.get = oldGet; api.uploadTemplate = oldUpload;
++      dom.window.close();
++      for (const [key, descriptor] of original) {
++        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
++        else Reflect.deleteProperty(globalThis, key);
++      }
++    }
++  });
++}
+--- a/frontend/test.mjs
++++ b/frontend/test.mjs
+@@ -4,8 +4,8 @@
+ 
+ await mkdir(new URL(".test-build/", import.meta.url), { recursive: true });
+ await build({
+-  entryPoints: ["tests/studio.test.tsx"], bundle: true, platform: "node",
+-  format: "esm", packages: "external", outfile: ".test-build/studio.test.mjs",
++  entryPoints: ["tests/studio.test.tsx", "tests/upload-form.test.tsx"], bundle: true, platform: "node",
++  format: "esm", packages: "external", outdir: ".test-build", outExtension: { ".js": ".mjs" },
+ });
+-const result = spawnSync(process.execPath, ["--test", ".test-build/studio.test.mjs"], { stdio: "inherit" });
++const result = spawnSync(process.execPath, ["--test", ".test-build/studio.test.mjs", ".test-build/upload-form.test.mjs"], { stdio: "inherit" });
+ process.exitCode = result.status ?? 1;
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -8,12 +8,17 @@
+     "typecheck": "tsc --noEmit",
+     "test": "node test.mjs"
+   },
+-  "dependencies": { "react": "19.2.3", "react-dom": "19.2.3" },
++  "dependencies": {
++    "react": "19.2.3",
++    "react-dom": "19.2.3"
++  },
+   "devDependencies": {
++    "@types/jsdom": "21.1.7",
++    "@types/node": "24.12.2",
+     "@types/react": "19.2.7",
+     "@types/react-dom": "19.2.3",
+-    "@types/node": "24.12.2",
+     "esbuild": "0.25.12",
++    "jsdom": "26.1.0",
+     "typescript": "5.9.3"
+   }
+ }
+--- a/frontend/package-lock.json
++++ b/frontend/package-lock.json
+@@ -12,11 +12,142 @@
+         "react-dom": "19.2.3"
+       },
+       "devDependencies": {
++        "@types/jsdom": "21.1.7",
+         "@types/node": "24.12.2",
+         "@types/react": "19.2.7",
+         "@types/react-dom": "19.2.3",
+         "esbuild": "0.25.12",
++        "jsdom": "26.1.0",
+         "typescript": "5.9.3"
++      }
++    },
++    "node_modules/@asamuzakjp/css-color": {
++      "version": "3.2.0",
++      "resolved": "https://registry.npmjs.org/@asamuzakjp/css-color/-/css-color-3.2.0.tgz",
++      "integrity": "sha512-K1A6z8tS3XsmCMM86xoWdn7Fkdn9m6RSVtocUrJYIwZnFVkng/PvkEoWtOWmP+Scc6saYWHWZYbndEEXxl24jw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@csstools/css-calc": "^2.1.3",
++        "@csstools/css-color-parser": "^3.0.9",
++        "@csstools/css-parser-algorithms": "^3.0.4",
++        "@csstools/css-tokenizer": "^3.0.3",
++        "lru-cache": "^10.4.3"
++      }
++    },
++    "node_modules/@csstools/color-helpers": {
++      "version": "5.1.0",
++      "resolved": "https://registry.npmjs.org/@csstools/color-helpers/-/color-helpers-5.1.0.tgz",
++      "integrity": "sha512-S11EXWJyy0Mz5SYvRmY8nJYTFFd1LCNV+7cXyAgQtOOuzb4EsgfqDufL+9esx72/eLhsRdGZwaldu/h+E4t4BA==",
++      "dev": true,
++      "funding": [
++        {
++          "type": "github",
++          "url": "https://github.com/sponsors/csstools"
++        },
++        {
++          "type": "opencollective",
++          "url": "https://opencollective.com/csstools"
++        }
++      ],
++      "license": "MIT-0",
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@csstools/css-calc": {
++      "version": "2.1.4",
++      "resolved": "https://registry.npmjs.org/@csstools/css-calc/-/css-calc-2.1.4.tgz",
++      "integrity": "sha512-3N8oaj+0juUw/1H3YwmDDJXCgTB1gKU6Hc/bB502u9zR0q2vd786XJH9QfrKIEgFlZmhZiq6epXl4rHqhzsIgQ==",
++      "dev": true,
++      "funding": [
++        {
++          "type": "github",
++          "url": "https://github.com/sponsors/csstools"
++        },
++        {
++          "type": "opencollective",
++          "url": "https://opencollective.com/csstools"
++        }
++      ],
++      "license": "MIT",
++      "engines": {
++        "node": ">=18"
++      },
++      "peerDependencies": {
++        "@csstools/css-parser-algorithms": "^3.0.5",
++        "@csstools/css-tokenizer": "^3.0.4"
++      }
++    },
++    "node_modules/@csstools/css-color-parser": {
++      "version": "3.1.0",
++      "resolved": "https://registry.npmjs.org/@csstools/css-color-parser/-/css-color-parser-3.1.0.tgz",
++      "integrity": "sha512-nbtKwh3a6xNVIp/VRuXV64yTKnb1IjTAEEh3irzS+HkKjAOYLTGNb9pmVNntZ8iVBHcWDA2Dof0QtPgFI1BaTA==",
++      "dev": true,
++      "funding": [
++        {
++          "type": "github",
++          "url": "https://github.com/sponsors/csstools"
++        },
++        {
++          "type": "opencollective",
++          "url": "https://opencollective.com/csstools"
++        }
++      ],
++      "license": "MIT",
++      "dependencies": {
++        "@csstools/color-helpers": "^5.1.0",
++        "@csstools/css-calc": "^2.1.4"
++      },
++      "engines": {
++        "node": ">=18"
++      },
++      "peerDependencies": {
++        "@csstools/css-parser-algorithms": "^3.0.5",
++        "@csstools/css-tokenizer": "^3.0.4"
++      }
++    },
++    "node_modules/@csstools/css-parser-algorithms": {
++      "version": "3.0.5",
++      "resolved": "https://registry.npmjs.org/@csstools/css-parser-algorithms/-/css-parser-algorithms-3.0.5.tgz",
++      "integrity": "sha512-DaDeUkXZKjdGhgYaHNJTV9pV7Y9B3b644jCLs9Upc3VeNGg6LWARAT6O+Q+/COo+2gg/bM5rhpMAtf70WqfBdQ==",
++      "dev": true,
++      "funding": [
++        {
++          "type": "github",
++          "url": "https://github.com/sponsors/csstools"
++        },
++        {
++          "type": "opencollective",
++          "url": "https://opencollective.com/csstools"
++        }
++      ],
++      "license": "MIT",
++      "engines": {
++        "node": ">=18"
++      },
++      "peerDependencies": {
++        "@csstools/css-tokenizer": "^3.0.4"
++      }
++    },
++    "node_modules/@csstools/css-tokenizer": {
++      "version": "3.0.4",
++      "resolved": "https://registry.npmjs.org/@csstools/css-tokenizer/-/css-tokenizer-3.0.4.tgz",
++      "integrity": "sha512-Vd/9EVDiu6PPJt9yAh6roZP6El1xHrdvIVGjyBsHR0RYwNHgL7FJPyIIW4fANJNG6FtyZfvlRPpFI4ZM/lubvw==",
++      "dev": true,
++      "funding": [
++        {
++          "type": "github",
++          "url": "https://github.com/sponsors/csstools"
++        },
++        {
++          "type": "opencollective",
++          "url": "https://opencollective.com/csstools"
++        }
++      ],
++      "license": "MIT",
++      "engines": {
++        "node": ">=18"
+       }
+     },
+     "node_modules/@esbuild/aix-ppc64": {
+@@ -459,6 +590,18 @@
+       ],
+       "engines": {
+         "node": ">=18"
++      }
++    },
++    "node_modules/@types/jsdom": {
++      "version": "21.1.7",
++      "resolved": "https://registry.npmjs.org/@types/jsdom/-/jsdom-21.1.7.tgz",
++      "integrity": "sha512-yOriVnggzrnQ3a9OKOCxaVuSug3w3/SbOj5i7VwXWZEyUNl3bLF9V3MfxGbZKuwqJOQyRfqXyROBB1CoZLFWzA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/node": "*",
++        "@types/tough-cookie": "*",
++        "parse5": "^7.0.0"
+       }
+     },
+     "node_modules/@types/node": {
+@@ -491,12 +634,95 @@
+         "@types/react": "^19.2.0"
+       }
+     },
++    "node_modules/@types/tough-cookie": {
++      "version": "4.0.5",
++      "resolved": "https://registry.npmjs.org/@types/tough-cookie/-/tough-cookie-4.0.5.tgz",
++      "integrity": "sha512-/Ad8+nIOV7Rl++6f1BdKxFSMgmoqEoYbHRpPcx3JEfv8VRsQe9Z4mCXeJBzxs7mbHY/XOZZuXlRNfhpVPbs6ZA==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/agent-base": {
++      "version": "7.1.4",
++      "resolved": "https://registry.npmjs.org/agent-base/-/agent-base-7.1.4.tgz",
++      "integrity": "sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">= 14"
++      }
++    },
++    "node_modules/cssstyle": {
++      "version": "4.6.0",
++      "resolved": "https://registry.npmjs.org/cssstyle/-/cssstyle-4.6.0.tgz",
++      "integrity": "sha512-2z+rWdzbbSZv6/rhtvzvqeZQHrBaqgogqt85sqFNbabZOuFbCVFb8kPeEtZjiKkbrm395irpNKiYeFeLiQnFPg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@asamuzakjp/css-color": "^3.2.0",
++        "rrweb-cssom": "^0.8.0"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
+     "node_modules/csstype": {
+       "version": "3.2.3",
+       "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
+       "integrity": "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==",
+       "dev": true,
+       "license": "MIT"
++    },
++    "node_modules/data-urls": {
++      "version": "5.0.0",
++      "resolved": "https://registry.npmjs.org/data-urls/-/data-urls-5.0.0.tgz",
++      "integrity": "sha512-ZYP5VBHshaDAiVZxjbRVcFJpc+4xGgT0bK3vzy1HLN8jTO975HEbuYzZJcHoQEY5K1a0z8YayJkyVETa08eNTg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "whatwg-mimetype": "^4.0.0",
++        "whatwg-url": "^14.0.0"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/debug": {
++      "version": "4.4.3",
++      "resolved": "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz",
++      "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "ms": "^2.1.3"
++      },
++      "engines": {
++        "node": ">=6.0"
++      },
++      "peerDependenciesMeta": {
++        "supports-color": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/decimal.js": {
++      "version": "10.6.0",
++      "resolved": "https://registry.npmjs.org/decimal.js/-/decimal.js-10.6.0.tgz",
++      "integrity": "sha512-YpgQiITW3JXGntzdUmyUR1V812Hn8T1YVXhCu+wO3OpS4eU9l4YdD3qjyiKdV6mvV29zapkMeD390UVEf2lkUg==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/entities": {
++      "version": "6.0.1",
++      "resolved": "https://registry.npmjs.org/entities/-/entities-6.0.1.tgz",
++      "integrity": "sha512-aN97NXWF6AWBTahfVOIrB/NShkzi5H7F9r1s9mD3cDj4Ko5f2qhhVoYMibXF7GlLveb/D2ioWay8lxI97Ven3g==",
++      "dev": true,
++      "license": "BSD-2-Clause",
++      "engines": {
++        "node": ">=0.12"
++      },
++      "funding": {
++        "url": "https://github.com/fb55/entities?sponsor=1"
++      }
+     },
+     "node_modules/esbuild": {
+       "version": "0.25.12",
+@@ -540,6 +766,151 @@
+         "@esbuild/win32-x64": "0.25.12"
+       }
+     },
++    "node_modules/html-encoding-sniffer": {
++      "version": "4.0.0",
++      "resolved": "https://registry.npmjs.org/html-encoding-sniffer/-/html-encoding-sniffer-4.0.0.tgz",
++      "integrity": "sha512-Y22oTqIU4uuPgEemfz7NDJz6OeKf12Lsu+QC+s3BVpda64lTiMYCyGwg5ki4vFxkMwQdeZDl2adZoqUgdFuTgQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "whatwg-encoding": "^3.1.1"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/http-proxy-agent": {
++      "version": "7.0.2",
++      "resolved": "https://registry.npmjs.org/http-proxy-agent/-/http-proxy-agent-7.0.2.tgz",
++      "integrity": "sha512-T1gkAiYYDWYx3V5Bmyu7HcfcvL7mUrTWiM6yOfa3PIphViJ/gFPbvidQ+veqSOHci/PxBcDabeUNCzpOODJZig==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "agent-base": "^7.1.0",
++        "debug": "^4.3.4"
++      },
++      "engines": {
++        "node": ">= 14"
++      }
++    },
++    "node_modules/https-proxy-agent": {
++      "version": "7.0.6",
++      "resolved": "https://registry.npmjs.org/https-proxy-agent/-/https-proxy-agent-7.0.6.tgz",
++      "integrity": "sha512-vK9P5/iUfdl95AI+JVyUuIcVtd4ofvtrOr3HNtM2yxC9bnMbEdp3x01OhQNnjb8IJYi38VlTE3mBXwcfvywuSw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "agent-base": "^7.1.2",
++        "debug": "4"
++      },
++      "engines": {
++        "node": ">= 14"
++      }
++    },
++    "node_modules/iconv-lite": {
++      "version": "0.6.3",
++      "resolved": "https://registry.npmjs.org/iconv-lite/-/iconv-lite-0.6.3.tgz",
++      "integrity": "sha512-4fCk79wshMdzMp2rH06qWrJE4iolqLhCUH+OiuIgU++RB0+94NlDL81atO7GX55uUKueo0txHNtvEyI6D7WdMw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "safer-buffer": ">= 2.1.2 < 3.0.0"
++      },
++      "engines": {
++        "node": ">=0.10.0"
++      }
++    },
++    "node_modules/is-potential-custom-element-name": {
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/is-potential-custom-element-name/-/is-potential-custom-element-name-1.0.1.tgz",
++      "integrity": "sha512-bCYeRA2rVibKZd+s2625gGnGF/t7DSqDs4dP7CrLA1m7jKWz6pps0LpYLJN8Q64HtmPKJ1hrN3nzPNKFEKOUiQ==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/jsdom": {
++      "version": "26.1.0",
++      "resolved": "https://registry.npmjs.org/jsdom/-/jsdom-26.1.0.tgz",
++      "integrity": "sha512-Cvc9WUhxSMEo4McES3P7oK3QaXldCfNWp7pl2NNeiIFlCoLr3kfq9kb1fxftiwk1FLV7CvpvDfonxtzUDeSOPg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "cssstyle": "^4.2.1",
++        "data-urls": "^5.0.0",
++        "decimal.js": "^10.5.0",
++        "html-encoding-sniffer": "^4.0.0",
++        "http-proxy-agent": "^7.0.2",
++        "https-proxy-agent": "^7.0.6",
++        "is-potential-custom-element-name": "^1.0.1",
++        "nwsapi": "^2.2.16",
++        "parse5": "^7.2.1",
++        "rrweb-cssom": "^0.8.0",
++        "saxes": "^6.0.0",
++        "symbol-tree": "^3.2.4",
++        "tough-cookie": "^5.1.1",
++        "w3c-xmlserializer": "^5.0.0",
++        "webidl-conversions": "^7.0.0",
++        "whatwg-encoding": "^3.1.1",
++        "whatwg-mimetype": "^4.0.0",
++        "whatwg-url": "^14.1.1",
++        "ws": "^8.18.0",
++        "xml-name-validator": "^5.0.0"
++      },
++      "engines": {
++        "node": ">=18"
++      },
++      "peerDependencies": {
++        "canvas": "^3.0.0"
++      },
++      "peerDependenciesMeta": {
++        "canvas": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/lru-cache": {
++      "version": "10.4.3",
++      "resolved": "https://registry.npmjs.org/lru-cache/-/lru-cache-10.4.3.tgz",
++      "integrity": "sha512-JNAzZcXrCt42VGLuYz0zfAzDfAvJWW6AfYlDBQyDV5DClI2m5sAmK+OIO7s59XfsRsWHp02jAJrRadPRGTt6SQ==",
++      "dev": true,
++      "license": "ISC"
++    },
++    "node_modules/ms": {
++      "version": "2.1.3",
++      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
++      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/nwsapi": {
++      "version": "2.2.28",
++      "resolved": "https://registry.npmjs.org/nwsapi/-/nwsapi-2.2.28.tgz",
++      "integrity": "sha512-IlVB7OS7qrOsVYlpnFIkETjMwT9jwvmocJmmM+GZU/PAB3uGi9Ezd7vcWhWBUnSc0ya4ppmQITOyP1ez9gg8cg==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/parse5": {
++      "version": "7.3.0",
++      "resolved": "https://registry.npmjs.org/parse5/-/parse5-7.3.0.tgz",
++      "integrity": "sha512-IInvU7fabl34qmi9gY8XOVxhYyMyuH2xUNpb2q8/Y+7552KlejkRvqvD19nMoUW/uQGGbqNpA6Tufu5FL5BZgw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "entities": "^6.0.0"
++      },
++      "funding": {
++        "url": "https://github.com/inikulin/parse5?sponsor=1"
++      }
++    },
++    "node_modules/punycode": {
++      "version": "2.3.1",
++      "resolved": "https://registry.npmjs.org/punycode/-/punycode-2.3.1.tgz",
++      "integrity": "sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=6"
++      }
++    },
+     "node_modules/react": {
+       "version": "19.2.3",
+       "resolved": "https://registry.npmjs.org/react/-/react-19.2.3.tgz",
+@@ -561,12 +932,92 @@
+         "react": "^19.2.3"
+       }
+     },
++    "node_modules/rrweb-cssom": {
++      "version": "0.8.0",
++      "resolved": "https://registry.npmjs.org/rrweb-cssom/-/rrweb-cssom-0.8.0.tgz",
++      "integrity": "sha512-guoltQEx+9aMf2gDZ0s62EcV8lsXR+0w8915TC3ITdn2YueuNjdAYh/levpU9nFaoChh9RUS5ZdQMrKfVEN9tw==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/safer-buffer": {
++      "version": "2.1.2",
++      "resolved": "https://registry.npmjs.org/safer-buffer/-/safer-buffer-2.1.2.tgz",
++      "integrity": "sha512-YZo3K82SD7Riyi0E1EQPojLz7kpepnSQI9IyPbHHg1XXXevb5dJI7tpyN2ADxGcQbHG7vcyRHk0cbwqcQriUtg==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/saxes": {
++      "version": "6.0.0",
++      "resolved": "https://registry.npmjs.org/saxes/-/saxes-6.0.0.tgz",
++      "integrity": "sha512-xAg7SOnEhrm5zI3puOOKyy1OMcMlIJZYNJY7xLBwSze0UjhPLnWfj2GF2EpT0jmzaJKIWKHLsaSSajf35bcYnA==",
++      "dev": true,
++      "license": "ISC",
++      "dependencies": {
++        "xmlchars": "^2.2.0"
++      },
++      "engines": {
++        "node": ">=v12.22.7"
++      }
++    },
+     "node_modules/scheduler": {
+       "version": "0.27.0",
+       "resolved": "https://registry.npmjs.org/scheduler/-/scheduler-0.27.0.tgz",
+       "integrity": "sha512-eNv+WrVbKu1f3vbYJT/xtiF5syA5HPIMtf9IgY/nKg0sWqzAUEvqY/xm7OcZc/qafLx/iO9FgOmeSAp4v5ti/Q==",
+       "license": "MIT"
+     },
++    "node_modules/symbol-tree": {
++      "version": "3.2.4",
++      "resolved": "https://registry.npmjs.org/symbol-tree/-/symbol-tree-3.2.4.tgz",
++      "integrity": "sha512-9QNk5KwDF+Bvz+PyObkmSYjI5ksVUYtjW7AU22r2NKcfLJcXp96hkDWU3+XndOsUb+AQ9QhfzfCT2O+CNWT5Tw==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/tldts": {
++      "version": "6.1.86",
++      "resolved": "https://registry.npmjs.org/tldts/-/tldts-6.1.86.tgz",
++      "integrity": "sha512-WMi/OQ2axVTf/ykqCQgXiIct+mSQDFdH2fkwhPwgEwvJ1kSzZRiinb0zF2Xb8u4+OqPChmyI6MEu4EezNJz+FQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "tldts-core": "^6.1.86"
++      },
++      "bin": {
++        "tldts": "bin/cli.js"
++      }
++    },
++    "node_modules/tldts-core": {
++      "version": "6.1.86",
++      "resolved": "https://registry.npmjs.org/tldts-core/-/tldts-core-6.1.86.tgz",
++      "integrity": "sha512-Je6p7pkk+KMzMv2XXKmAE3McmolOQFdxkKw0R8EYNr7sELW46JqnNeTX8ybPiQgvg1ymCoF8LXs5fzFaZvJPTA==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/tough-cookie": {
++      "version": "5.1.2",
++      "resolved": "https://registry.npmjs.org/tough-cookie/-/tough-cookie-5.1.2.tgz",
++      "integrity": "sha512-FVDYdxtnj0G6Qm/DhNPSb8Ju59ULcup3tuJxkFb5K8Bv2pUXILbf0xZWU8PX8Ov19OXljbUyveOFwRMwkXzO+A==",
++      "dev": true,
++      "license": "BSD-3-Clause",
++      "dependencies": {
++        "tldts": "^6.1.32"
++      },
++      "engines": {
++        "node": ">=16"
++      }
++    },
++    "node_modules/tr46": {
++      "version": "5.1.1",
++      "resolved": "https://registry.npmjs.org/tr46/-/tr46-5.1.1.tgz",
++      "integrity": "sha512-hdF5ZgjTqgAntKkklYw0R03MG2x/bSzTtkxmIRw/sTNV8YXsCJ1tfLAX23lhxhHJlEf3CRCOCGGWw3vI3GaSPw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "punycode": "^2.3.1"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
+     "node_modules/typescript": {
+       "version": "5.9.3",
+       "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+@@ -587,6 +1038,106 @@
+       "integrity": "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==",
+       "dev": true,
+       "license": "MIT"
++    },
++    "node_modules/w3c-xmlserializer": {
++      "version": "5.0.0",
++      "resolved": "https://registry.npmjs.org/w3c-xmlserializer/-/w3c-xmlserializer-5.0.0.tgz",
++      "integrity": "sha512-o8qghlI8NZHU1lLPrpi2+Uq7abh4GGPpYANlalzWxyWteJOCsr/P+oPBA49TOLu5FTZO4d3F9MnWJfiMo4BkmA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "xml-name-validator": "^5.0.0"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/webidl-conversions": {
++      "version": "7.0.0",
++      "resolved": "https://registry.npmjs.org/webidl-conversions/-/webidl-conversions-7.0.0.tgz",
++      "integrity": "sha512-VwddBukDzu71offAQR975unBIGqfKZpM+8ZX6ySk8nYhVoo5CYaZyzt3YBvYtRtO+aoGlqxPg/B87NGVZ/fu6g==",
++      "dev": true,
++      "license": "BSD-2-Clause",
++      "engines": {
++        "node": ">=12"
++      }
++    },
++    "node_modules/whatwg-encoding": {
++      "version": "3.1.1",
++      "resolved": "https://registry.npmjs.org/whatwg-encoding/-/whatwg-encoding-3.1.1.tgz",
++      "integrity": "sha512-6qN4hJdMwfYBtE3YBTTHhoeuUrDBPZmbQaxWAqSALV/MeEnR5z1xd8UKud2RAkFoPkmB+hli1TZSnyi84xz1vQ==",
++      "deprecated": "Use @exodus/bytes instead for a more spec-conformant and faster implementation",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "iconv-lite": "0.6.3"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/whatwg-mimetype": {
++      "version": "4.0.0",
++      "resolved": "https://registry.npmjs.org/whatwg-mimetype/-/whatwg-mimetype-4.0.0.tgz",
++      "integrity": "sha512-QaKxh0eNIi2mE9p2vEdzfagOKHCcj1pJ56EEHGQOVxp8r9/iszLUUV7v89x9O1p/T+NlTM5W7jW6+cz4Fq1YVg==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/whatwg-url": {
++      "version": "14.2.0",
++      "resolved": "https://registry.npmjs.org/whatwg-url/-/whatwg-url-14.2.0.tgz",
++      "integrity": "sha512-De72GdQZzNTUBBChsXueQUnPKDkg/5A5zp7pFDuQAj5UFoENpiACU0wlCvzpAGnTkj++ihpKwKyYewn/XNUbKw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "tr46": "^5.1.0",
++        "webidl-conversions": "^7.0.0"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/ws": {
++      "version": "8.22.0",
++      "resolved": "https://registry.npmjs.org/ws/-/ws-8.22.0.tgz",
++      "integrity": "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=10.0.0"
++      },
++      "peerDependencies": {
++        "bufferutil": "^4.0.1",
++        "utf-8-validate": ">=5.0.2"
++      },
++      "peerDependenciesMeta": {
++        "bufferutil": {
++          "optional": true
++        },
++        "utf-8-validate": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/xml-name-validator": {
++      "version": "5.0.0",
++      "resolved": "https://registry.npmjs.org/xml-name-validator/-/xml-name-validator-5.0.0.tgz",
++      "integrity": "sha512-EvGK8EJ3DhaHfbRlETOWAS5pO9MZITeauHKJyb8wyajUfQUenkIg2MvLDTZ4T/TgIcm3HU0TFBgWWboAZ30UHg==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/xmlchars": {
++      "version": "2.2.0",
++      "resolved": "https://registry.npmjs.org/xmlchars/-/xmlchars-2.2.0.tgz",
++      "integrity": "sha512-JZnDKK8B0RCDw84FNdDAIpZK+JuJw+s7Lz8nksI7SIuU3UXJJslUthsi+uWBUYOwPFwW7W7PRLRfUKpxjtjFCw==",
++      "dev": true,
++      "license": "MIT"
+     }
+   }
+ }
+--- a/frontend/README.md
++++ b/frontend/README.md
+@@ -47,3 +47,15 @@
+ Раздельные `/api/design/plan`, `/build` и `/fix` сохранены для совместимости API.
+ Расширенный DesignRequest с таблицами, обязательными тезисами и параметрами моделей
+ по-прежнему доступен программно; эти элементы не загружают основной интерфейс.
++
++## Загрузка шаблона
++
++Чтение и передача PPTX имеют отдельное состояние: во время загрузки доступны ввод
++текста и импорт TXT. Генерация и повторная отправка шаблона ждут окончания загрузки.
++Интерфейс показывает чтение файла, процент передачи и ожидание проверки сервером.
++Передача ограничена пятью минутами вместо общего 45-секундного тайм-аута API.
++Сессия запрашивается без кеширования перед отправкой; POST не повторяется автоматически.
++Ошибка загрузки сохраняет текст и ранее выбранный шаблон.
++
++`npm test` также проверяет ошибки загрузки и работу React-формы в jsdom при
++незавершённом запросе: ввод, импорт TXT и сохранность текста после успеха или ошибки.

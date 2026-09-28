@@ -220,21 +220,21 @@ def test_llm_client_uses_validated_runtime_limits(
     monkeypatch,
     service_importer,
 ) -> None:
-    import gigachat
-
     captured = {}
 
-    class FakeGigaChat:
+    class FakeChatCompletions:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    monkeypatch.setattr(gigachat, "GigaChat", FakeGigaChat)
     monkeypatch.setenv("LLM_API_TIMEOUT", "37")
     monkeypatch.setenv("LLM_MAX_TOKENS", "7654")
 
     llm = service_importer(CONTENT_SERVICE_ROOT, "app.chains.llm")
+    monkeypatch.setattr(llm, "ChatCompletionsClient", FakeChatCompletions)
+    llm.LLMClient()
 
     assert captured["timeout"] == 37
+    assert captured["base_url"] == "https://router.huggingface.co/v1"
     assert llm.settings.llm_max_tokens == 7654
 
     with pytest.raises(ValueError):

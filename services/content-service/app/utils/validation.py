@@ -7,6 +7,7 @@ from app.utils.grounding import (
     extract_significant_words,
     find_unsupported_claim_markers,
 )
+from app.utils.placeholder_grounding import placeholder_grounding_issues
 
 LIST_PLACEHOLDER_TYPES = {
     "BODY",
@@ -85,6 +86,14 @@ class ContentValidator:
                         f"Слайд {slide.index}, placeholder {ph.name or ph.idx}: текст длиннее максимума "
                         f"({len(generated_text)} > {ph.max_length})"
                     )
+
+                if source_text:
+                    for issue in placeholder_grounding_issues(
+                        source_text, generated_text, ph.text,
+                    ):
+                        issues.append(
+                            f"Слайд {slide.index}, placeholder {ph.name or ph.idx}: {issue}"
+                        )
 
                 if (
                     ph.placeholder_type in LIST_PLACEHOLDER_TYPES

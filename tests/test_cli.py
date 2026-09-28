@@ -72,6 +72,30 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path]:
     return template, script
 
 
+def test_fast_generation_mode_is_forwarded_to_content_service(tmp_path, monkeypatch):
+    template, script = _inputs(tmp_path)
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "run", _successful_subprocess(calls))
+    result = cli.run_pipeline(
+        template=template,
+        script=script,
+        output=tmp_path / "fast.pptx",
+        generation_mode="fast",
+    )
+    assert _option(calls[1][0], "--generation-mode") == "fast"
+    assert len(PPTXPresentation(result.output_path).slides) == 1
+
+
+def test_unknown_generation_mode_does_not_start_services(tmp_path, monkeypatch):
+    template, script = _inputs(tmp_path)
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **kw: pytest.fail("unexpected call"))
+    with pytest.raises(cli.PipelineError, match="generation_mode"):
+        cli.run_pipeline(
+            template=template, script=script, output=tmp_path / "result.pptx",
+            generation_mode="unknown",
+        )
+
+
 def test_run_pipeline_invokes_isolated_services_and_publishes_valid_pptx(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -421,3 +445,70 @@ def test_main_reports_pipeline_error_without_traceback(
     assert exit_code == 1
     assert "Ошибка:" in captured.err
     assert "не найден" in captured.err
+
+
+def test_images_run_before_publication_and_failure_preserves_output(tmp_path, monkeypatch):
+    template, script = _inputs(tmp_path)
+    output = tmp_path / "result.pptx"
+    output.write_bytes(b"previous result")
+    monkeypatch.setattr(cli.subprocess, "run", _successful_subprocess([]))
+    calls = []
+
+    def fail(path, template_json, *, report_path, mode):
+        assert output.read_bytes() == b"previous result"
+        assert len(PPTXPresentation(path).slides) == 1
+        calls.append(mode)
+        raise cli.ImageGenerationError("Image provider unavailable")
+    monkeypatch.setattr(cli, "illustrate_presentation", fail)
+    with pytest.raises(cli.PipelineError) as error:
+        cli.run_pipeline(template=template, script=script, output=output, force=True)
+    assert error.value.stage == "images"
+    assert calls == ["auto"]
+    assert output.read_bytes() == b"previous result"
+
+
+def test_cli_image_mode_off_reaches_image_stage(tmp_path, monkeypatch):
+    template, script = _inputs(tmp_path)
+    monkeypatch.setattr(cli.subprocess, "run", _successful_subprocess([]))
+    calls = []
+    monkeypatch.setattr(cli, "illustrate_presentation", lambda *a, **kw: calls.append(kw["mode"]))
+    assert cli.main([
+        "--template", str(template), "--script", str(script),
+        "--output", str(tmp_path / "result.pptx"), "--image-mode", "off",
+    ]) == 0
+    assert calls == ["off"]
+
+
+@pytest.mark.parametrize("returncode", [*cli.CONTENT_ERROR_CODES, 1, 7])
+def test_content_exit_code_reaches_cli_as_allowlisted_marker(
+    tmp_path, monkeypatch, capsys, returncode,
+):
+    template, script = _inputs(tmp_path)
+
+    def fake_run(command, *, cwd, env, check):
+        if Path(cwd).name == "parsing-service":
+            Path(_option(command, "--output-json")).write_text("{}", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0)
+        return subprocess.CompletedProcess(command, returncode)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    result = cli.main([
+        "--template", str(template), "--script", str(script),
+        "--output", str(tmp_path / "result.pptx"),
+    ])
+    assert result == 1
+    expected = cli.CONTENT_ERROR_CODES.get(returncode, "unknown")
+    assert capsys.readouterr().err.endswith(f"{cli.CONTENT_ERROR_MARKER}{expected}\n")
+    assert not (tmp_path / "result.pptx").exists()
+
+
+def test_parser_exit_code_cannot_be_reported_as_content_error(tmp_path, monkeypatch, capsys):
+    template, script = _inputs(tmp_path)
+    monkeypatch.setattr(
+        cli.subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(command, 23),
+    )
+    assert cli.main([
+        "--template", str(template), "--script", str(script),
+        "--output", str(tmp_path / "result.pptx"),
+    ]) == 1
+    assert cli.CONTENT_ERROR_MARKER not in capsys.readouterr().err

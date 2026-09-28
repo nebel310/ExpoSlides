@@ -1,0 +1,24 @@
+exposlides.158-160-217-249.sslip.io {
+    @foreign_origin {
+        header Origin *
+        expression `{http.request.header.Origin} != "https://exposlides.158-160-217-249.sslip.io"`
+    }
+    @same_origin header Origin https://exposlides.158-160-217-249.sslip.io
+
+    route {
+        respond @foreign_origin "Request origin is not allowed" 403
+        basic_auth {
+            alex REPLACE_WITH_CADDY_PASSWORD_HASH
+        }
+        request_body {
+            max_size 36MB
+        }
+        request_header @same_origin Origin http://127.0.0.1:8765
+        reverse_proxy 127.0.0.1:8765 {
+            # Локальному HTTP-серверу нужна полная длина тела загрузки.
+            request_buffers 36MB
+            header_up Host 127.0.0.1:8765
+            header_up -Authorization
+        }
+    }
+}

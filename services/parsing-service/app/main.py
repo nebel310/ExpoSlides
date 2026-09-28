@@ -8,12 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.config import settings
-from app.grpc.file_service_client import FileServiceClient
-from app.grpc.server import GrpcServer
-from app.kafka.consumer import TaskCreatedConsumer
-from app.kafka.producer import KafkaProducer
 from app.parsers.pptx_parser import PPTXParser
-from app.services.parser_pipeline import ParserPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +48,12 @@ run = run_cli
 
 async def run_service() -> None:
     """Запускает gRPC-сервер, Kafka producer и consumer в одном loop"""
+    from app.grpc.file_service_client import FileServiceClient
+    from app.grpc.server import GrpcServer
+    from app.kafka.consumer import TaskCreatedConsumer
+    from app.kafka.producer import KafkaProducer
+    from app.services.parser_pipeline import ParserPipeline
+
     file_client = FileServiceClient(
         host=settings.file_service_grpc_host,
         port=settings.file_service_grpc_port,
