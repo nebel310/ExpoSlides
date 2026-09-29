@@ -33,7 +33,6 @@ class ParserPipeline:
         result = await self._parse_pptx_bytes(pptx_bytes)
         presentation = result.presentation
 
-        # Загружаем ассеты в file-service и проставляем file_id
         file_ids: dict[str, str] = {}
         for asset in result.assets.values():
             file_id = await self._file_client.upload_file(
@@ -60,6 +59,7 @@ class ParserPipeline:
             structure_file_id=structure_file_id,
             template_file_id=payload.template_file_id,
             script_file_id=payload.script_file_id,
+            formats=payload.formats,
         )
 
     async def _parse_pptx_bytes(self, pptx_bytes: bytes):

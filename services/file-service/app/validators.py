@@ -21,6 +21,8 @@ WEBP_RIFF_MAGIC_BYTES = b"RIFF"
 WEBP_FORMAT_MAGIC_BYTES = b"WEBP"
 SVG_XML_PREFIX = b"<?xml"
 SVG_TAG_PREFIX = b"<svg"
+HTML_DOCTYPE_PREFIX = b"<!doctype"
+HTML_TAG_PREFIX = b"<html"
 
 
 FILE_TYPE_EXTENSIONS: dict[str, list[str]] = {
@@ -37,6 +39,7 @@ FILE_TYPE_EXTENSIONS: dict[str, list[str]] = {
     "wmf": [".wmf"],
     "svg": [".svg"],
     "webp": [".webp"],
+    "html": [".html", ".htm"],
 }
 
 
@@ -128,6 +131,12 @@ def _is_valid_svg(content: bytes) -> bool:
     return head.startswith(SVG_XML_PREFIX) or head.startswith(SVG_TAG_PREFIX)
 
 
+def _is_valid_html(content: bytes) -> bool:
+    """Проверить что контент является HTML"""
+    head = content[:200].lstrip().lower()
+    return head.startswith(HTML_DOCTYPE_PREFIX) or head.startswith(HTML_TAG_PREFIX)
+
+
 def _is_valid_webp(content: bytes) -> bool:
     """Проверить что контент является webp"""
     if len(content) < 12:
@@ -161,6 +170,8 @@ def detect_file_type(content: bytes) -> str | None:
         return "webp"
     if _is_valid_svg(content):
         return "svg"
+    if _is_valid_html(content):
+        return "html"
     if _is_valid_txt(content):
         return "txt"
     return None

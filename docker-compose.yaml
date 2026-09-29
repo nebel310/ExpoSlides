@@ -121,7 +121,7 @@ services:
         condition: service_healthy
       file-service:
         condition: service_started
-  
+
   content-service:
     build:
       context: .
@@ -144,11 +144,11 @@ services:
       LLM_API_TIMEOUT: ${LLM_API_TIMEOUT}
       LLM_MODEL: ${LLM_MODEL}
       LLM_BASE_URL: ${LLM_BASE_URL}
-      LLM_SCOPE: ${LLM_SCOPE}
       LLM_TEMPERATURE: ${LLM_TEMPERATURE}
       LLM_MAX_TOKENS: ${LLM_MAX_TOKENS}
       LLM_RESPONSE_RETRIES: ${LLM_RESPONSE_RETRIES}
       LOG_LEVEL: ${LOG_LEVEL}
+      LLM_STUB_MODE: ${LLM_STUB_MODE:-false}
     depends_on:
       kafka:
         condition: service_healthy
@@ -188,7 +188,7 @@ services:
       ALLOWED_ORIGINS: ${GATEWAY_ALLOWED_ORIGINS:-[]}
       COOKIE_SECURE: ${GATEWAY_COOKIE_SECURE:-false}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      KAFKA_GROUP_ID: gateway-service
+      GATEWAY_KAFKA_GROUP_ID: gateway-service
       KAFKA_TOPIC_TASK_CREATED: task.created
       KAFKA_TOPIC_TASK_PARSED: task.parsed
       KAFKA_TOPIC_TASK_CONTENT_READY: task.content_ready
@@ -207,8 +207,37 @@ services:
       redis:
         condition: service_healthy
 
+  # caddy: ЭТО НУЖНО ТОЛЬКО ДЛЯ ДЕПЛОЯ
+  #   image: caddy:2-alpine
+  #   container_name: caddy
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./frontend/gateway:/srv/frontend:ro
+  #     - ./deploy/alex-cloud/Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - caddy_data:/data
+  #     - caddy_config:/config
+  #   depends_on:
+  #     - gateway-service
+  #   restart: unless-stopped
+
+  frontend:
+    image: caddy:2-alpine
+    container_name: frontend
+    ports:
+      - "127.0.0.1:2000:2000"
+    volumes:
+      - ./frontend/gateway:/srv/frontend:ro
+      - ./deploy/local/CaddyFile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - gateway-service
+    restart: unless-stopped
+
 volumes:
   minio_data:
   postgres_data:
   kafka_data:
   redis_data:
+  caddy_data:
+  caddy_config:

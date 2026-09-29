@@ -57,12 +57,12 @@ def test_network_builder_creates_pptx_and_gateway_completes(tmp_path, service_im
     producer = AsyncMock()
     envelope = _envelope(ids)
     asyncio.run(network.process_message(
-        json.dumps(envelope).encode(), network.BuilderPipeline(client), producer, network.Settings()
+        json.dumps(envelope).encode(), network.BuilderPipeline(client, network.Settings()), producer, network.Settings()
     ))
     topic, raw = producer.send_and_wait.await_args.args
     assert topic == "task.built"
     event = json.loads(raw)
-    assert event == {**envelope, "payload": {**ids, "result_file_id": result_id}}
+    assert event == {**envelope, "payload": {**ids, "formats": ["pptx"], "result_file_id": result_id, "extra_files": {}}}
     upload = client.upload_file.await_args.kwargs
     assert upload["task_id"] == envelope["task_id"]
     assert upload["filename"] == "result.pptx"
@@ -117,7 +117,7 @@ def test_network_builder_failure_publishes_failed(
     envelope = _envelope(ids)
     producer = AsyncMock()
     asyncio.run(network.process_message(
-        json.dumps(envelope).encode(), network.BuilderPipeline(client), producer, network.Settings()
+        json.dumps(envelope).encode(), network.BuilderPipeline(client, network.Settings()), producer, network.Settings()
     ))
     producer.send_and_wait.assert_awaited_once()
     topic, raw = producer.send_and_wait.await_args.args

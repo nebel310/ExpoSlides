@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     llm_max_tokens: int = Field(default=8192, gt=0)
     llm_response_retries: int = Field(default=2, ge=0, le=5)
     content_validation_retries: int = Field(default=2, ge=0, le=5)
+    llm_stub_mode: bool = False
 
     image_api_url: str = "https://router.huggingface.co/fal-ai/fal-ai/z-image/turbo"
     image_api_key: str = ""

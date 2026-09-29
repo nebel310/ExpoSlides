@@ -3,6 +3,8 @@ import copy
 from pptx.shapes.base import BaseShape
 from pptx.slide import Slide
 
+PLACEHOLDER_IDX_INVALID = 4294967295
+
 
 def get_text_placeholder_key(shape: BaseShape) -> str | None:
     """Возвращает контрактный ключ текстового placeholder."""
@@ -10,7 +12,13 @@ def get_text_placeholder_key(shape: BaseShape) -> str | None:
         return None
 
     placeholder_idx = shape.placeholder_format.idx
-    return str(placeholder_idx) if placeholder_idx is not None else shape.name
+    if (
+        placeholder_idx is None
+        or placeholder_idx == PLACEHOLDER_IDX_INVALID
+        or placeholder_idx < 0
+    ):
+        return shape.name
+    return str(placeholder_idx)
 
 
 def replace_placeholder_text(

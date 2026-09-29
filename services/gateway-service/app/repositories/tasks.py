@@ -79,7 +79,7 @@ class TaskRepository:
                         elif cls.STAGE_ORDER[status] <= previous_order:
                             return None
                     else:
-                        task.update(content_file_id=None, result_file_id=None, error=None)
+                        task.update(content_file_id=None, result_file_id=None, extra_files={}, error=None)
                     task.update(fields)
                     task.update(status=status, attempt=attempt, updated_at=time.time())
                     pipe.multi()

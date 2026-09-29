@@ -99,6 +99,15 @@ class GatewayKafkaConsumer:
             if not isinstance(file_id, str) or not file_id or len(file_id) > 256:
                 return
             fields = {field: file_id, "error": None}
+            if topic == settings.kafka_topic_task_built:
+                extra_files = inner.get("extra_files") or {}
+                if not isinstance(extra_files, dict) or any(
+                    key not in {"pdf", "html"} or not isinstance(value, str)
+                    or not value or len(value) > 256
+                    for key, value in extra_files.items()
+                ):
+                    return
+                fields["extra_files"] = extra_files
         elif topic == settings.kafka_topic_task_failed:
             status = "failed"
             reason = payload.get("error") or inner.get("reason")
@@ -123,6 +132,9 @@ class GatewayKafkaConsumer:
             return
         if file_id is not None:
             await FileRepository.grant(redis, sid, file_id)
+        if topic == settings.kafka_topic_task_built:
+            for extra_file_id in (task.get("extra_files") or {}).values():
+                await FileRepository.grant(redis, sid, extra_file_id)
         await emit_to_session(sid, topic, {
             "task_id": task_id,
             "attempt": task.get("attempt", 1),
@@ -131,6 +143,7 @@ class GatewayKafkaConsumer:
                 "structure_file_id": task.get("structure_file_id"),
                 "content_file_id": task.get("content_file_id"),
                 "result_file_id": task.get("result_file_id"),
+                "extra_files": task.get("extra_files") or {},
                 "error": task.get("error"),
             },
         })

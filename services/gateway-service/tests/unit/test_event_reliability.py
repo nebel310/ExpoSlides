@@ -158,3 +158,19 @@ async def test_stopping_failed_consumer_does_not_acknowledge_event(redis, monkey
     monkeypatch.setattr(module.asyncio, "sleep", stop)
     await consumer.run()
     consumer._consumer.commit.assert_not_awaited()
+
+
+async def test_extra_exports_are_owned_and_cleared_for_new_attempt(redis, monkeypatch):
+    await seed(redis)
+    emit = AsyncMock()
+    monkeypatch.setattr(module, "emit_to_session", emit)
+    consumer = GatewayKafkaConsumer()
+    payload = json.loads(event())
+    payload["payload"]["extra_files"] = {"pdf": "pdf-result", "html": "html-result"}
+    await consumer._handle(redis, "task.built", json.dumps(payload).encode())
+    for file_id in ("result", "pdf-result", "html-result"):
+        assert await FileRepository.owns(redis, "owner", file_id)
+        assert not await FileRepository.owns(redis, "other", file_id)
+    assert emit.await_args.args[2]["payload"]["extra_files"] == payload["payload"]["extra_files"]
+    await consumer._handle(redis, "task.content_ready", event("task.content_ready", 2, "new"))
+    assert (await TaskRepository.get(redis, "task"))["extra_files"] == {}

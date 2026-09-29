@@ -15,6 +15,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
+ALLOWED_FORMATS = {"pptx", "pdf", "html"}
+
 
 async def _require_sid(request: Request, redis: aioredis.Redis) -> str:
     """Возвращает sid или падает с 401"""
@@ -36,11 +38,18 @@ async def create_task(
     for file_id in (body.template_file_id, body.script_file_id):
         if not await FileRepository.owns(redis, sid, file_id):
             raise HTTPException(status_code=404, detail="Файл не найден")
+    unknown = set(body.formats) - ALLOWED_FORMATS
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Неизвестные форматы: {sorted(unknown)}",
+        )
     task = await task_service.create_task(
         redis=redis,
         sid=sid,
         template_file_id=body.template_file_id,
         script_file_id=body.script_file_id,
+        formats=body.formats,
     )
     return CreateTaskResponse(task_id=task["task_id"])
 

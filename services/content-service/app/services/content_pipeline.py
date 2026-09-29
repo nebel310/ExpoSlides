@@ -79,6 +79,7 @@ class ContentPipeline:
             script_file_id=str(payload.script_file_id),
             template_file_id=str(payload.template_file_id),
             feedback_file_id=None,
+            formats=payload.formats,
         )
 
     async def _handle_retry(
@@ -104,6 +105,7 @@ class ContentPipeline:
             script_file_id=str(payload.script_file_id),
             template_file_id=str(payload.template_file_id),
             feedback_file_id=str(payload.feedback_file_id),
+            formats=payload.formats,
         )
 
     async def _run(
@@ -114,6 +116,7 @@ class ContentPipeline:
         script_file_id: str,
         template_file_id: str,
         feedback_file_id: str | None,
+        formats: list[str],
     ) -> None:
         """Общий путь: скачать → домен → залить content.json → опубликовать"""
         structure_bytes = await self._file_client.download_file(structure_file_id)
@@ -157,6 +160,7 @@ class ContentPipeline:
             content_file_id=content_file_id,
             template_file_id=template_file_id,
             script_file_id=script_file_id,
+            formats=formats,
         )
         ready_envelope = MessageEnvelope(
             task_id=envelope.task_id,
