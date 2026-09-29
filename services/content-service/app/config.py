@@ -24,9 +24,9 @@ class Settings(BaseSettings):
     llm_response_retries: int = Field(default=2, ge=0, le=5)
     content_validation_retries: int = Field(default=2, ge=0, le=5)
 
-    image_api_url: str = ""
+    image_api_url: str = "https://router.huggingface.co/fal-ai/fal-ai/z-image/turbo"
     image_api_key: str = ""
-    image_model: str = "black-forest-labs/FLUX.1-schnell"
+    image_model: str = "Tongyi-MAI/Z-Image-Turbo"
     image_api_timeout: int = Field(default=90, gt=0, le=180)
 
     kafka_bootstrap_servers: str = "kafka:9092"

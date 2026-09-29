@@ -24,7 +24,10 @@ from pptx.oxml.xmlchemy import OxmlElement
 from pptx.parts.slide import SlidePart
 from pptx.util import Pt
 
+from exposlides.design_contrast import repair_text_contrast
+from exposlides.design_data import cell_text
 from exposlides.design_models import Dataset, DeckPlan, PlacedBlock, TextStyle
+from exposlides.design_native_image import fill_native_images
 from exposlides.design_native_text import (
     TEXT_KINDS,
     bound_text_shapes,
@@ -49,18 +52,31 @@ def build_deck(template: Path, plan: DeckPlan, output: Path) -> Path:
     )
     datasets = {dataset.id: dataset for dataset in plan.datasets}
     for slide, instance in zip(slides, plan.slides, strict=True):
+        fill_native_images(presentation, slide, instance.blocks)
         bound_text = bound_text_shapes(slide, instance.blocks)
         retained = retained_shape_ids(bound_text.values())
         smartart = capture_smartart(slide, instance.blocks)
         removals = [identifier for identifier in instance.remove_shape_ids if identifier not in retained]
         remove_shapes(slide, [*removals, *[item[1] for item in smartart.values()]])
         for block in instance.blocks:
+            if block.kind == "image" and block.image_fit == "template":
+                continue
             if block.id in bound_text:
                 fill_native_text(bound_text[block.id], block)
             elif block.kind == "smartart":
                 add_smartart(slide, block, smartart[block.id][0])
             else:
                 _add_block(slide, block, datasets)
+        text_shapes = {**bound_text}
+        for shape in slide.shapes:
+            for block in instance.blocks:
+                if block.kind in TEXT_KINDS and shape.name == "exposlides:" + block.id:
+                    text_shapes[block.id] = shape
+        palette = _template_palette(slide, "FFFFFF")
+        for block in instance.blocks:
+            if block.id in text_shapes:
+                repair_text_contrast(slide, text_shapes[block.id], block.style.color,
+                                     lambda fill, color: _color_on_fill(palette, fill, color))
         if instance.notes or slide.has_notes_slide:
             notes = slide.notes_slide.notes_text_frame
             if notes is not None:
@@ -128,10 +144,6 @@ def _font(font: Any, style: TextStyle) -> None:
     font.color.rgb = RGBColor.from_string(style.color)
 
 
-def _cell_text(value: str | int | float) -> str:
-    return format(value, "g") if isinstance(value, float) else str(value)
-
-
 def _add_table(slide: Any, block: PlacedBlock, dataset: Dataset) -> None:
     box = block.box
     shape = slide.shapes.add_table(
@@ -157,7 +169,7 @@ def _add_table(slide: Any, block: PlacedBlock, dataset: Dataset) -> None:
                     else block.style.color,
                 }
             )
-            _write_text(cell.text_frame, [_cell_text(value)], style)
+            _write_text(cell.text_frame, [cell_text(value)], style)
             cell.margin_left = cell.margin_right = Pt(6)
             cell.margin_top = cell.margin_bottom = Pt(4)
 
@@ -228,13 +240,49 @@ def _theme_colors(slide: Any, fallback: str) -> list[str]:
     return colors
 
 
+def _chart_data_labels_fit(block: PlacedBlock, dataset: Dataset) -> bool:
+    """Показывать подписи только с запасом для офисной автоматической верстки.
+
+    Шрифт не уменьшаем; точные данные остаются в workbook и таблице HTML.
+    Оценка консервативна: LibreOffice отводит подписи лишь часть ширины графика.
+    """
+    size = block.style.size
+    width = max(0, block.box.width / 12700 - size * 6)
+    height = max(0, block.box.height / 12700 - size * 5)
+    count = len(dataset.rows)
+    series = len(dataset.columns) - 1
+    if width <= 0 or height < size * 2 or series > 1:
+        return False
+    if block.chart_type == "pie":
+        values = [float(str(row[1]).replace(",", ".")) for row in dataset.rows]
+        total = sum(values)
+        if not total or any(value <= 0 for value in values):
+            return False
+        smallest_arc = math.pi * min(width, height) * min(values) / total
+        return smallest_arc >= size * 5
+    longest = max(len(cell_text(value)) for row in dataset.rows for value in row[1:])
+    label_width = size * (longest * 0.60 + 1)
+    available_width = min(width * 0.12, width / (count + 1))
+    if label_width > available_width:
+        return False
+    return block.chart_type != "bar" or height / count >= size * 1.7
+
+
+def _chart_legend_fits(block: PlacedBlock, labels: list[str]) -> bool:
+    size = block.style.size
+    label_width = size * (max(len(label) for label in labels) * 0.60 + 2)
+    columns = max(1, int(block.box.width / 12700 / label_width))
+    lines = math.ceil(len(labels) / columns)
+    return lines * size * 1.4 <= block.box.height / 12700 * 0.25
+
+
 def _add_chart(slide: Any, block: PlacedBlock, dataset: Dataset) -> None:
     if block.chart_type is None:
         raise NativeBuildError("Для диаграммы не указан тип")
     if block.chart_type == "pie" and len(dataset.columns) != 2:
         raise NativeBuildError("Круговая диаграмма требует ровно одну серию данных")
     data = CategoryChartData()
-    data.categories = [_cell_text(row[0]) for row in dataset.rows]
+    data.categories = [cell_text(row[0]) for row in dataset.rows]
     for index, column in enumerate(dataset.columns[1:], start=1):
         try:
             values = [float(str(row[index]).replace(",", ".")) for row in dataset.rows]
@@ -256,6 +304,9 @@ def _add_chart(slide: Any, block: PlacedBlock, dataset: Dataset) -> None:
     shape = slide.shapes.add_chart(chart_type, box.left, box.top, box.width, box.height, data)
     shape.name = "exposlides:" + block.id
     chart = shape.chart
+    # Явный setter запрещает LibreOffice добавлять заголовок из имени серии.
+    # Его лишняя строка сжимала plot и скрывала B даже при tickLblSkip=1.
+    chart.has_title = False
     _font(chart.font, block.style)
     for container in (chart._chartSpace, chart._chartSpace.chart.plotArea):
         properties = OxmlElement("c:spPr")
@@ -266,7 +317,10 @@ def _add_chart(slide: Any, block: PlacedBlock, dataset: Dataset) -> None:
         container.insert_element_before(
             properties, "c:txPr", "c:externalData", "c:printSettings", "c:extLst"
         )
-    chart.has_legend = len(dataset.columns) > 2 or block.chart_type == "pie"
+    chart.has_legend = len(dataset.columns) > 2 or (
+        block.chart_type == "pie"
+        and _chart_legend_fits(block, [cell_text(row[0]) for row in dataset.rows])
+    )
     if chart.has_legend:
         chart.legend.position = XL_LEGEND_POSITION.BOTTOM
         chart.legend.include_in_layout = False
@@ -279,8 +333,6 @@ def _add_chart(slide: Any, block: PlacedBlock, dataset: Dataset) -> None:
             target.format.fill.solid()
             target.format.fill.fore_color.rgb = RGBColor.from_string(color)
             target.format.line.color.rgb = RGBColor.from_string(color)
-    if block.chart_type == "bar" and len(dataset.rows) <= 7:
-        _show_each_category(chart)
     if block.chart_type != "pie":
         for axis, title in [
             (chart.category_axis, dataset.columns[0]),
@@ -290,6 +342,7 @@ def _add_chart(slide: Any, block: PlacedBlock, dataset: Dataset) -> None:
             axis.format.line.color.rgb = RGBColor.from_string(block.style.color)
             _write_text(axis.axis_title.text_frame, [title], block.style)
             _font(axis.tick_labels.font, block.style)
+        category_size = block.style.size
         if block.chart_type == "bar":
             # LibreOffice может игнорировать tickLblSkip=1 при столкновении глифов.
             # Резервируем высоту для названий/числовой оси и межстрочных
@@ -300,18 +353,40 @@ def _add_chart(slide: Any, block: PlacedBlock, dataset: Dataset) -> None:
             ))
             category_style = block.style.model_copy(update={"size": label_size})
             _font(chart.category_axis.tick_labels.font, category_style)
+            category_size = label_size
+            category_length = plot_height_pt
+            # Одна строка подписи требует межстрочного запаса, а не 70% пустоты.
+            # Избыточный запас скрывал B даже у трёх хорошо разделённых столбцов.
+            category_spacing = category_size * 1.25
+        else:
+            category_length = max(0, box.width / 12700 - block.style.size * 6)
+            category_spacing = category_size * (
+                max(len(cell_text(row[0])) for row in dataset.rows) * 0.60 + 1
+            )
+        visible_categories = max(1, int(category_length / category_spacing))
+        _set_category_stride(chart, max(1, math.ceil(len(dataset.rows) / visible_categories)))
         values = [float(str(value).replace(",", "."))
                   for row in dataset.rows for value in row[1:]]
+        # Столбцы показывают абсолютную величину от нуля, включая отрицательные.
+        if block.chart_type == "bar":
+            if min(values) >= 0:
+                chart.value_axis.minimum_scale = 0
+            elif max(values) <= 0:
+                chart.value_axis.maximum_scale = 0
         # Число делений зависит от доступной длины оси и кегля; данные не меняются.
         if block.chart_type == "bar":
             # Подписи категорий и название оси занимают существенную часть ширины.
             # Ширина shape целиком завышает реальную длину числовой оси в 1.5–2 раза.
-            label_chars = max(len(_cell_text(row[0])) for row in dataset.rows)
+            label_chars = max(len(cell_text(row[0])) for row in dataset.rows)
             categories_width = min(box.width*0.45,
                                    Pt(block.style.size*(label_chars*0.5+1.7)))
             axis_length = max(1, min(box.width*0.75,
                                     box.width-categories_width-Pt(block.style.size*1.2)))
-            label_spacing = Pt(block.style.size*2.5)
+            span = max(0, *values) - min(0, *values)
+            tick_chars = (8 if max(abs(value) for value in values) >= 1e7 or span < 1e-4
+                          else max(len(format(value, ",.6f").rstrip("0").rstrip("."))
+                                   for value in [0, *values]))
+            label_spacing = Pt(block.style.size * max(2.5, tick_chars * 0.60 + 1))
         else:
             axis_length = max(1, box.height-Pt(block.style.size*3))
             label_spacing = Pt(block.style.size*3)
@@ -331,14 +406,15 @@ def _add_chart(slide: Any, block: PlacedBlock, dataset: Dataset) -> None:
             chart.value_axis.tick_labels.number_format = number_format
             chart.value_axis.tick_labels.number_format_is_linked = False
     plot = chart.plots[0]
-    plot.has_data_labels = True
-    plot.data_labels.show_value = block.chart_type != "pie"
-    plot.data_labels.show_percentage = block.chart_type == "pie"
-    _font(plot.data_labels.font, block.style)
+    plot.has_data_labels = _chart_data_labels_fit(block, dataset)
+    if plot.has_data_labels:
+        plot.data_labels.show_value = block.chart_type != "pie"
+        plot.data_labels.show_percentage = block.chart_type == "pie"
+        _font(plot.data_labels.font, block.style)
 
 
-def _show_each_category(chart: Any) -> None:
-    """Запретить автоматический пропуск подписей коротких наборов категорий.
+def _set_category_stride(chart: Any, stride: int) -> None:
+    """Разрежать только подписи; все исходные категории остаются в диаграмме.
 
     python-pptx пока не предоставляет setter для этих свойств CategoryAxis.
     Порядок элементов соответствует CT_CatAx; значение 1 означает каждую категорию.
@@ -352,7 +428,7 @@ def _show_each_category(chart: Any) -> None:
         if element is None:
             element = OxmlElement(name)
             axis.insert_element_before(element, *successors)
-        element.set("val", "1")
+        element.set("val", str(stride))
 
 
 def _add_diagram(slide: Any, block: PlacedBlock) -> None:
@@ -483,8 +559,12 @@ def _validate_saved(path: Path, plan: DeckPlan) -> None:
     for slide, instance in zip(reopened.slides, plan.slides, strict=True):
         shapes = {shape.name: shape for shape in native_shapes(slide.shapes)}
         by_id = {shape.shape_id: shape for shape in native_shapes(slide.shapes)}
+        layout_ids = {shape.shape_id: shape for shape in native_shapes(slide.slide_layout.shapes)}
         for block in instance.blocks:
-            shape = (by_id.get(block.source_shape_id)
+            if block.kind == "image" and block.image_fit == "template":
+                shape = (layout_ids if block.source_layer == "layout" else by_id).get(block.source_shape_id)
+            else:
+                shape = (by_id.get(block.source_shape_id)
                      if block.kind in TEXT_KINDS and block.source_shape_id is not None
                      else shapes.get("exposlides:" + block.id))
             if shape is None:

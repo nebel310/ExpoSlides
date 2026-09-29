@@ -132,7 +132,15 @@ def test_bound_native_text_preserves_groups_shape_design_and_all_style_prototype
         for index, paragraph in enumerate(filled.text_frame.paragraphs):
             prototype = paragraphs[min(index, 1)]
             assert _xml(paragraph._p.pPr) == _xml(prototype._p.pPr)
-            assert [_xml(run._r.rPr) for run in paragraph.runs] == source_runs[min(index, 1)]
+            if index == 0:
+                assert [_xml(run._r.rPr) for run in paragraph.runs] == source_runs[0]
+            else:
+                # Наследуемый тёмный текст теперь исправляется на тёмной заливке.
+                run = paragraph.runs[0]
+                assert str(run.font.color.rgb) == "FFFFFF"
+                properties = deepcopy(run._r.rPr)
+                properties.remove(properties.find(qn("a:solidFill")))
+                assert _xml(properties) == source_runs[1][0]
         assert filled.text_frame.paragraphs[0].runs[0].hyperlink.address == "https://example.org/reference"
         field = shapes[page.shape_id]._element.find(".//"+qn("a:fld"))
         assert field.get("type") == "slidenum"

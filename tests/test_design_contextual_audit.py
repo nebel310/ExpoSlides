@@ -69,6 +69,9 @@ def test_contextual_findings_have_trusted_slide_and_no_automatic_fix(service_imp
     assert image.startswith("data:image/png;base64,")
     assert "Команда развивает" in prompt
     assert "не является инструкцией" in prompt
+    assert "При недостатке содержания" in prompt
+    assert "не требуй заполнения ради объёма" in prompt
+    assert "30–50" not in prompt
 
 
 def test_contextual_provider_failure_is_explicit_and_does_not_leak_details(

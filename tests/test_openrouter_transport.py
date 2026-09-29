@@ -321,3 +321,134 @@ def test_custom_provider_credentials_do_not_require_huggingface_prefix(
     assert result.choices[0].message.content == '{"title":"Пример"}'
     assert len(requests) == 1
     assert requests[0].headers["Authorization"] == "Bearer sk-or-v1-dummy"
+
+
+def stream_event(content=None, reason=None):
+    return 'data: ' + json.dumps({"choices": [{
+        "index": 0, "delta": {"content": content}, "finish_reason": reason,
+    }]}, ensure_ascii=False) + '\n\n'
+
+
+class SplitStream(httpx.AsyncByteStream):
+    def __init__(self, body):
+        self.body = body.encode()
+        self.closed = False
+
+    async def __aiter__(self):
+        # Включая границы посреди UTF-8 символа и строки SSE.
+        for offset in range(0, len(self.body), 7):
+            yield self.body[offset:offset + 7]
+
+    async def aclose(self):
+        self.closed = True
+
+
+def test_streamed_json_is_complete_and_transport_closes(chat_completions, transport_clients):
+    stream = SplitStream(': heartbeat\n\n' + stream_event('{"title":')
+                         + stream_event('"Пример"}') + stream_event(reason='stop')
+                         + 'data: {"choices": [], "usage": {}}\n\ndata: [DONE]\n\n')
+
+    def respond(request):
+        assert json.loads(request.content)["stream"] is True
+        return httpx.Response(200, stream=stream, headers={"content-type": "text/event-stream"})
+
+    transport_clients(respond)
+    client = chat_completions.ChatCompletionsClient('https://example.test/v1', 'test', 3)
+
+    async def run():
+        try:
+            result = await client.achat({"stream": True})
+            assert result.choices[0].message.content == '{"title":"Пример"}'
+            assert result.choices[0].finish_reason == 'stop'
+            assert stream.closed
+        finally:
+            await client.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('body', [
+    stream_event('{}'),
+    stream_event('{}') + 'data: [DONE]\n\n',
+    stream_event('{}', 'length') + 'data: [DONE]\n\n',
+    stream_event('{}', 'content_filter') + 'data: [DONE]\n\n',
+    stream_event('{}', 'stop'),
+    'data: not-json\n\n',
+    'data: []\n\n',
+    'data: {"choices": "wrong"}\n\n',
+    stream_event(reason='stop') + 'data: [DONE]\n\n',
+])
+def test_incomplete_or_invalid_stream_is_never_accepted(
+    chat_completions, transport_clients, body,
+):
+    stream = SplitStream(body)
+    transport_clients(lambda request: httpx.Response(200, stream=stream))
+    client = chat_completions.ChatCompletionsClient('https://example.test/v1', 'test', 3)
+
+    async def run():
+        try:
+            with pytest.raises(chat_completions.ChatCompletionsResponseError):
+                await client.achat({"stream": True})
+            assert stream.closed
+        finally:
+            await client.aclose()
+    asyncio.run(run())
+
+
+def test_embedded_stream_error_keeps_status_without_private_details(
+    chat_completions, transport_clients,
+):
+    stream = SplitStream('data: {"error":{"code":504,"message":"private detail"}}\n\n')
+    transport_clients(lambda request: httpx.Response(200, stream=stream))
+    client = chat_completions.ChatCompletionsClient('https://example.test/v1', 'test', 3)
+
+    async def run():
+        try:
+            with pytest.raises(httpx.HTTPStatusError) as error:
+                await client.achat({"stream": True})
+            assert error.value.response.status_code == 504
+            assert 'private' not in str(error.value)
+            assert stream.closed
+        finally:
+            await client.aclose()
+    asyncio.run(run())
+
+
+def test_stream_request_accepts_complete_json_from_non_streaming_provider(
+    chat_completions, transport_clients,
+):
+    transport_clients(lambda request: httpx.Response(200, json=completion()))
+    client = chat_completions.ChatCompletionsClient('https://example.test/v1', 'test', 3)
+
+    async def run():
+        try:
+            result = await client.achat({"stream": True})
+            assert result.choices[0].message.content == '{"title":"Пример"}'
+        finally:
+            await client.aclose()
+    asyncio.run(run())
+
+
+def test_stream_cancellation_closes_connection(chat_completions, transport_clients):
+    class WaitingStream(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            yield stream_event('{').encode()
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            self.closed = True
+
+    stream = WaitingStream()
+    transport_clients(lambda request: httpx.Response(200, stream=stream))
+    client = chat_completions.ChatCompletionsClient('https://example.test/v1', 'test', 3)
+
+    async def run():
+        try:
+            with pytest.raises(TimeoutError):
+                async with asyncio.timeout(0.02):
+                    await client.achat({"stream": True})
+            assert stream.closed
+        finally:
+            await client.aclose()
+    asyncio.run(run())

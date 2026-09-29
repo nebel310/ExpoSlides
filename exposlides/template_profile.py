@@ -133,6 +133,9 @@ def _shape_id(element: dict) -> int:
 
 
 def _text_candidate(element: dict) -> bool:
+    # Тип placeholder описывает назначение, но не гарантирует наличие txBody.
+    if element.get("has_text_frame") is False:
+        return False
     kind = str(element.get("placeholder_kind") or element.get("placeholder_type") or "").lower()
     # Picture placeholders могут иметь пустой text frame в OOXML. Это место
     # для изображения, а не ещё одна область для текста презентации.
@@ -188,6 +191,19 @@ def _palette(theme: dict, source_elements: list[dict], slide: dict) -> list[str]
     return list(dict.fromkeys(color for value in values if (color := _hex(value))))
 
 
+def _replaceable_photo(element: dict, width: int, height: int) -> bool:
+    box = _box(element)
+    name = element.get("shape_name") or element.get("placeholder_name") or ""
+    return bool(box and element.get("type") == "image"
+                and not element.get("hidden") and not element.get("is_background")
+                and not PROTECTED_NAME.search(name)
+                and 0.03 <= box.width * box.height / (width * height) < 0.9
+                and box.width >= width * 0.12 and box.height >= height * 0.12
+                and box.left >= -width * .01 and box.top >= -height * .01
+                and box.left + box.width <= width * 1.01
+                and box.top + box.height <= height * 1.01)
+
+
 def profile_from_json(data: dict[str, Any], template: Path) -> TemplateProfile:
     """Выделить слоты и найти свободную область, сохранив декор и повторяемые подписи."""
     version = str(data.get("schema_version", "1"))
@@ -233,6 +249,13 @@ def profile_from_json(data: dict[str, Any], template: Path) -> TemplateProfile:
         palette = _palette(theme, [*source_elements, *inherited], slide)
         slots, protected, mutable, regions = [], [], [], []
         visuals: dict[str, list[int]] = {}
+        replaceable_images: dict[int, Box] = {}
+        layout_images = {
+            _shape_id(element): _box(element)
+            for element in elements(layout.get("elements", []))
+            if not element.get("placeholder_kind") and not element.get("placeholder_type")
+            and _replaceable_photo(element, width, height)
+        }
         text_boxes = [
             box
             for element in source_elements
@@ -256,6 +279,10 @@ def profile_from_json(data: dict[str, Any], template: Path) -> TemplateProfile:
                     visuals.setdefault(element["type"], []).append(shape_id)
                 else:
                     protected.append(shape_id)
+                    # Меняем только крупные фото непосредственно на слайде.
+                    # Фон, master/layout, логотипы и мелкий декор остаются защищёнными.
+                    if _replaceable_photo(element, width, height):
+                        replaceable_images[shape_id] = box
                     # Подложка текста сохраняется, но не исключает занимаемый ею контент.
                     container = element.get("type") == "shape" and any(
                         box.left <= text_box.left
@@ -398,6 +425,8 @@ def profile_from_json(data: dict[str, Any], template: Path) -> TemplateProfile:
                 protected_shape_ids=sorted(set(protected)),
                 mutable_shape_ids=sorted(set(mutable)),
                 protected_regions=regions,
+                replaceable_images=replaceable_images,
+                layout_images=layout_images,
             )
         )
     if not patterns:

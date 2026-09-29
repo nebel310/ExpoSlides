@@ -8,7 +8,7 @@ def _config(**changes):
     return SimpleNamespace(**({
         "llm_api_key": "hf_test_key", "llm_base_url": "https://router.huggingface.co/v1",
         "llm_fast_model": "Qwen/Qwen3.8-27B:deepinfra", "image_api_url": "",
-        "image_api_key": "", "image_model": "black-forest-labs/FLUX.1-schnell",
+        "image_api_key": "", "image_model": "Tongyi-MAI/Z-Image-Turbo",
     } | changes))
 
 

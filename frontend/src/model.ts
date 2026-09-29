@@ -4,11 +4,12 @@ export const activeStatus = (status: string) =>
   ["queued", "planning", "running", "building", "rendering", "auditing", "fixing", "cancelling"].includes(status);
 
 /** Простой экран переносит из старой работы только доступные пользователю поля. */
-export function simpleDesignRequest(previous?: Pick<DesignRequest, "script" | "slide_count">): DesignRequest {
+export function simpleDesignRequest(previous?: Pick<DesignRequest, "script" | "slide_count"> & Partial<Pick<DesignRequest, "datasets">>): DesignRequest {
   return {
     script: previous?.script ?? "", purpose: "Объяснить главное и предложить следующий шаг",
     audience: "Коллеги", slide_count: previous?.slide_count ?? 12, count_mode: "exact",
-    language: "ru", mode: "llm", required_messages: [], datasets: [], contextual_audit: false,
+    language: "ru", mode: "llm", required_messages: [], datasets: (previous?.datasets ?? []).map(dataset => ({ ...dataset,
+      columns: [...dataset.columns], rows: dataset.rows.map(row => [...row]) })), contextual_audit: false,
   };
 }
 
@@ -76,19 +77,42 @@ export function validateStory(story: Story): string | null {
 /** CSV с кавычками и переносами; структура проверяется до отправки в генерацию. */
 export function parseDataset(text: string, name: string, id: string): Dataset {
   const clean = text.replace(/^\uFEFF/, "");
-  const delimiter = clean.split(/\r?\n/, 1)[0].includes(";") ? ";" : ",";
-  const rows: string[][] = [];
-  let row: string[] = [], cell = "", quoted = false;
+  // Разделители считаются только вне кавычек первой логической строки.
+  const counts = new Map([["\t", 0], [";", 0], [",", 0]]);
+  let inside = false;
   for (let i = 0; i < clean.length; i++) {
     const char = clean[i];
     if (char === '"') {
-      if (quoted && clean[i + 1] === '"') { cell += '"'; i++; }
-      else quoted = !quoted;
-    } else if (char === delimiter && !quoted) { row.push(cell.trim()); cell = ""; }
-    else if ((char === "\n" || char === "\r") && !quoted) {
+      if (inside && clean[i + 1] === '"') i++;
+      else inside = !inside;
+    } else if (!inside) {
+      if (char === "\r" || char === "\n") break;
+      if (counts.has(char)) counts.set(char, counts.get(char)! + 1);
+    }
+  }
+  const delimiter = [...counts].sort((a, b) => b[1] - a[1])[0][0];
+  const rows: string[][] = [];
+  let row: string[] = [], cell = "", quoted = false, closed = false;
+  for (let i = 0; i < clean.length; i++) {
+    const char = clean[i];
+    if (quoted) {
+      if (char === '"') {
+        if (clean[i + 1] === '"') { cell += '"'; i++; }
+        else { quoted = false; closed = true; }
+      } else cell += char;
+    } else if (char === delimiter) {
+      row.push(cell.trim()); cell = ""; closed = false;
+    } else if (char === "\n" || char === "\r") {
       if (char === "\r" && clean[i + 1] === "\n") i++;
-      row.push(cell.trim()); if (row.some(Boolean)) rows.push(row); row = []; cell = "";
-    } else cell += char;
+      row.push(cell.trim()); if (row.some(Boolean)) rows.push(row);
+      row = []; cell = ""; closed = false;
+    } else if (char === '"') {
+      if (cell || closed) throw new Error("Кавычка должна стоять в начале ячейки CSV.");
+      quoted = true;
+    } else {
+      if (closed) throw new Error("После закрывающей кавычки нужен разделитель CSV.");
+      cell += char;
+    }
   }
   if (quoted) throw new Error("В CSV не закрыта кавычка. Проверьте файл.");
   row.push(cell.trim()); if (row.some(Boolean)) rows.push(row);
@@ -97,12 +121,13 @@ export function parseDataset(text: string, name: string, id: string): Dataset {
     throw new Error("CSV должен содержать заголовок, 2–20 столбцов и хотя бы одну строку данных.");
   if (columns.some(c => !c) || new Set(columns).size !== columns.length)
     throw new Error("Заголовки столбцов должны быть непустыми и различаться.");
-  if (rows.length > 200 || rows.some(r => r.length !== columns.length))
-    throw new Error("В CSV допускается до 200 строк с одинаковым числом столбцов.");
+  if (rows.some(r => r.length !== columns.length))
+    throw new Error("В CSV строки должны быть с одинаковым числом столбцов.");
   return {
-    id, name: name.replace(/\.csv$/i, ""), columns, source: name, unit: "",
-    rows: rows.map(r => r.map(value => {
-      const normalized = delimiter === ";" ? value.replace(",", ".") : value;
+    id, name: name.replace(/\.(csv|tsv)$/i, ""), columns, source: name, unit: "",
+    rows: rows.map(r => r.map((value, index) => {
+      if (index === 0) return value; // Коды и годы остаются подписями, включая ведущие нули.
+      const normalized = delimiter !== "," ? value.replace(",", ".") : value;
       return /^-?\d+(\.\d+)?$/.test(normalized) && Math.abs(Number(normalized)) <= Number.MAX_SAFE_INTEGER
         ? Number(normalized) : value;
     })),
@@ -141,8 +166,8 @@ export function parseContentPack(text: string): ContentPack {
     if (!Array.isArray(item.columns) || item.columns.length < 2 || item.columns.length > 20 || item.columns.some(v => typeof v !== "string" || !v.trim()) || new Set(item.columns).size !== item.columns.length)
       throw new Error(prefix + "нужны 2–20 различных непустых названий columns.");
     const columns = item.columns as string[];
-    if (!Array.isArray(item.rows) || !item.rows.length || item.rows.length > 200 || item.rows.some(row => !Array.isArray(row) || row.length !== columns.length || row.some(cell => typeof cell !== "string" && (typeof cell !== "number" || !Number.isFinite(cell)))))
-      throw new Error(prefix + "rows должен содержать 1–200 строк из строковых или числовых ячеек по числу столбцов.");
+    if (!Array.isArray(item.rows) || !item.rows.length || item.rows.some(row => !Array.isArray(row) || row.length !== columns.length || row.some(cell => typeof cell !== "string" && (typeof cell !== "number" || !Number.isFinite(cell)))))
+      throw new Error(prefix + "rows должен содержать непустой список строк из строковых или числовых ячеек по числу столбцов.");
     if (item.unit !== undefined && typeof item.unit !== "string") throw new Error(prefix + "unit должен быть строкой.");
     return { id: item.id, name: item.name, source: item.source, columns, rows: item.rows as (string | number)[][], unit: item.unit as string ?? "" };
   });

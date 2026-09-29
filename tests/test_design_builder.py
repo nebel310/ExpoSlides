@@ -341,7 +341,7 @@ def test_links_from_shared_layout_cannot_leave_hidden_source_slides(tmp_path):
 
 
 @pytest.mark.parametrize("tag", ["custom_show", "section"])
-def test_presentation_level_template_references_fail_explicitly(tmp_path, tag):
+def test_empty_presentation_navigation_does_not_block_build(tmp_path, tag):
     from lxml import etree
     from pptx.oxml.ns import qn
 
@@ -359,9 +359,13 @@ def test_presentation_level_template_references_fail_explicitly(tmp_path, tag):
             extension, "{http://schemas.microsoft.com/office/powerpoint/2010/main}sectionLst"
         )
     prs.save(template)
-    with pytest.raises(NativeBuildError, match="custom shows или sections"):
-        build_deck(template, _plan(removals, count=1), result)
-    assert not result.exists()
+    original = template.read_bytes()
+    build_deck(template, _plan(removals, count=1), result)
+    reopened = Presentation(result)
+    assert len(reopened.slides) == 1
+    assert reopened._element.find(qn("p:custShowLst")) is None
+    assert not any(element.tag.endswith("}sectionLst") for element in reopened._element.iter())
+    assert template.read_bytes() == original
 
 
 @pytest.mark.parametrize("values", [[12, 18], [-12, 18], [0.001, 0.003], [10_000_000, 30_000_000]])
@@ -405,3 +409,20 @@ def test_browser_chart_long_categories_reduce_ticks_without_truncating_labels(tm
         units.append(chart.value_axis.major_unit)
     assert units[1] > units[0]
     assert 24 / units[1] <= 3
+
+
+@pytest.mark.parametrize("value", [1234567.89, 0.123456789012345, -1234567.89, 1e-20, 20.0])
+def test_table_preserves_all_significant_digits_after_save_and_reopen(tmp_path, value):
+    template, result = tmp_path / "source.pptx", tmp_path / "output.pptx"
+    removals = _template(template)
+    data = Dataset(id="data", name="Exact", columns=["Category", "Value"],
+                   rows=[["Original", value]], source="input.csv")
+    block = _block("visual", "table", dataset_id=data.id)
+    build_deck(template, _plan(removals, [block], count=1, datasets=[data]), result)
+    presentation = Presentation(result)
+    assert len(presentation.slides) == 1
+    shape = next(s for s in presentation.slides[0].shapes if s.name == "exposlides:visual")
+    cell = shape.table.cell(1, 1)
+    assert float(cell.text) == value
+    assert cell.text == (str(int(value)) if value.is_integer() else str(value))
+    assert cell.text_frame.paragraphs[0].runs[0].font.size.pt == block.style.size

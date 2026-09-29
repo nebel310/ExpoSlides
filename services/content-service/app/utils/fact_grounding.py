@@ -57,6 +57,17 @@ _STOP = {
     "the", "and", "company", "platform", "will", "next", "steps",
 }
 _NEGATION = re.compile(r"\b(?:не|not|never)\s+([a-zа-яё]+)", re.IGNORECASE)
+# Отрицание может относиться к именной части через связку: «не представлять
+# собой одну растровую картинку». Допускаем только связки и определители,
+# чтобы отрицание другого действия не переносилось на соседнее утверждение.
+_NEGATION_PREFIX = re.compile(
+    r"\b(?:не|not|never)\s+(?:(?:"
+    r"представл\w*|явля\w*|собой|быть|есть|"
+    r"один|одна|одно|одни|одного|одной|одному|одним|одну|одних|одними|одном|"
+    r"be|being|is|are|was|were|represent(?:s|ed|ing)?|a|an|one|single"
+    r")\s+)*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -177,6 +188,12 @@ def required_source_messages(source_text: str) -> list[str]:
     return result
 
 
+def source_topic_visible(source_text: str, generated_text: str) -> bool:
+    """Минимальная видимая опора источника, когда пояснения вынесены в notes."""
+    expected = _terms(source_text)
+    return bool(expected) and len(expected & _terms(generated_text)) >= min(2, len(expected))
+
+
 def missing_required_messages(
     generated_text: str, required_messages: Sequence[str],
 ) -> list[str]:
@@ -241,14 +258,15 @@ def _polarity_issues(source_text: str, generated_text: str) -> list[str]:
                         )]
                     if not matches or not objects.intersection(_terms(other)):
                         continue
-                    if any(not re.search(r"\b(?:не|not|never)\s*$", other[:match.start()],
-                                         re.IGNORECASE) for match in matches):
+                    if any(not _NEGATION_PREFIX.search(other[:match.start()])
+                           for match in matches):
                         issues.append("Изменено отрицание исходного утверждения: " + text.strip())
     return list(dict.fromkeys(issues))
 
 
 def semantic_content_issues(
     source_text: str, generated_text: str, required_messages: Sequence[str] | None = None,
+    *, check_required_messages: bool = True,
 ) -> list[str]:
     """Обнаружить явные подмены связей фактов и пропущенные обязательные сообщения."""
     source = extract_fact_records(source_text)
@@ -269,7 +287,7 @@ def semantic_content_issues(
                 "Изменена связь показателя, значения, единицы или периода: " + fact.source_text
             )
     issues.extend(_polarity_issues(source_text, generated_text))
-    required = list(required_source_messages(source_text))
+    required = list(required_source_messages(source_text)) if check_required_messages else []
     required.extend(required_messages or [])
     issues.extend(
         "Не раскрыто обязательное сообщение источника: " + message

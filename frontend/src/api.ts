@@ -15,7 +15,10 @@ function serverMessage(data: unknown): string {
 }
 
 export class StudioApi {
-  constructor(private transport: typeof fetch = globalThis.fetch.bind(globalThis)) {}
+  constructor(
+    private transport: typeof fetch = globalThis.fetch.bind(globalThis),
+    private createUpload: () => XMLHttpRequest = () => new XMLHttpRequest(),
+  ) {}
 
   async get<T>(path: string, signal?: AbortSignal): Promise<T> {
     return this.request<T>(path, undefined, signal);
@@ -28,6 +31,34 @@ export class StudioApi {
     return this.request<T>(path, body, signal, session.token);
   }
 
+  async uploadTemplate<T>(body: { name: string; data: string }, progress: (percent: number) => void): Promise<T> {
+    const session = await this.get<{ token: string }>("/api/session");
+    if (!session.token) throw new ApiError("Не удалось открыть сессию. Обновите страницу.", 403);
+    return new Promise<T>((resolve, reject) => {
+      const xhr = this.createUpload();
+      xhr.open("POST", "/api/templates");
+      // Большой PPTX на медленном соединении не укладывается в обычные 45 секунд.
+      xhr.timeout = 300000;
+      xhr.setRequestHeader("Content-Type", "application/json");
+      xhr.setRequestHeader("X-Session-Token", session.token);
+      xhr.upload.onprogress = event => {
+        if (event.lengthComputable) progress(Math.min(100, Math.floor(event.loaded / event.total * 100)));
+      };
+      xhr.onload = () => {
+        let data: unknown;
+        try { data = JSON.parse(xhr.responseText); }
+        catch { reject(new ApiError("Сервер вернул неожиданный ответ. Обновите страницу.", xhr.status)); return; }
+        if (xhr.status < 200 || xhr.status >= 300) reject(new ApiError(serverMessage(data), xhr.status));
+        else resolve(data as T);
+      };
+      xhr.onerror = () => reject(new ApiError("Не удалось загрузить шаблон: нет связи с сервером. Текст сохранён в форме.", 0));
+      xhr.ontimeout = () => reject(new ApiError("Загрузка заняла больше пяти минут. Проверьте соединение или уменьшите файл. Текст сохранён в форме.", 0));
+      xhr.onabort = () => reject(new ApiError("Загрузка шаблона отменена. Текст сохранён в форме.", 0));
+      // Повторная отправка при потере ответа могла бы создать второй шаблон.
+      xhr.send(JSON.stringify(body));
+    });
+  }
+
   private async request<T>(path: string, body?: unknown, signal?: AbortSignal, token?: string): Promise<T> {
     const controller = new AbortController();
     const abort = () => controller.abort();
@@ -36,7 +67,7 @@ export class StudioApi {
     const timer = setTimeout(abort, 45000);
     try {
       const response = await this.transport(path, {
-        method: body === undefined ? "GET" : "POST", credentials: "same-origin",
+        method: body === undefined ? "GET" : "POST", credentials: "same-origin", cache: "no-store",
         headers: body === undefined ? {} : { "Content-Type": "application/json", "X-Session-Token": token! },
         body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal,
       });

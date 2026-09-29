@@ -25,6 +25,7 @@ from pptx.util import Inches, Pt
 
 from exposlides.design_content import source_excerpts, validate_story
 from exposlides.design_models import AuditReport, Dataset, DeckPlan, DesignRequest, VisualRequest
+from exposlides.design_native_text import TEXT_KINDS
 from exposlides.design_pipeline import DesignPipeline, save_model
 
 CASES = (
@@ -165,10 +166,15 @@ def verify_variant(directory: Path, story, request: DesignRequest) -> dict:
     counts = Counter()
     for source, instance, slide in zip(story.slides, plan.slides, presentation.slides, strict=True):
         _require(source.id == instance.story_slide_id, "Изменился порядок истории")
-        named = {shape.name: shape for shape in _walk(slide.shapes)}
+        shapes = list(_walk(slide.shapes))
+        named = {shape.name: shape for shape in shapes}
+        by_id = {shape.shape_id: shape for shape in shapes}
         actual_paragraphs = []
         for block in instance.blocks:
-            shape = named.get(f"exposlides:{block.id}")
+            shape = (by_id.get(block.source_shape_id)
+                     if block.kind in TEXT_KINDS
+                     and block.source_shape_id is not None
+                     else named.get(f"exposlides:{block.id}"))
             _require(shape is not None, f"Потерян нативный объект {block.id}")
             if block.kind in {"title", "text"}:
                 _require(shape.has_text_frame, f"Текст {block.id} не редактируется")
@@ -223,6 +229,11 @@ def verify_variant(directory: Path, story, request: DesignRequest) -> dict:
     }
 
 
+def distinct_deck_count(variants: list[dict]) -> int:
+    """ТЗ требует разные колоды; общие обложки и текстовые слайды допустимы."""
+    return len({tuple(variant["png_sha256"]) for variant in variants})
+
+
 def run_case(output: Path, case: str, slide_count: int) -> dict:
     directory = output / case
     directory.mkdir()
@@ -254,15 +265,17 @@ def run_case(output: Path, case: str, slide_count: int) -> dict:
     distinct = [len({variant["png_sha256"][index] for variant in checked}) == 3
                 for index in range(slide_count)]
     _require(pipeline_seconds <= 300, "Превышен лимит пяти минут")
+    distinct_decks = distinct_deck_count(checked)
     result = {
-        "case": case, "status": "passed" if all(distinct) else "failed", "slide_count": slide_count,
+        "case": case, "status": "passed" if distinct_decks == 3 else "failed",
+        "distinct_deck_count": distinct_decks, "slide_count": slide_count,
         "pipeline_seconds": round(pipeline_seconds, 3),
         "template_sha256": template_hash, "distinct_variants_per_slide": distinct,
         "variants": checked,
         "claim_scope": "synthetic extractive pipeline; no live model or official template evaluation",
     }
-    if not all(distinct):
-        result["error"] = "Некоторые слайды не имеют трёх разных рендеров"
+    if distinct_decks != 3:
+        result["error"] = "Не получены три визуально различные колоды"
     save_model(directory / "benchmark-result.json", result)
     return result
 

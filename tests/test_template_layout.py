@@ -176,3 +176,84 @@ def test_selected_cover_background_and_photo_survive_actual_pptx_build(tmp_path)
                 assert any(getattr(shape, "image", None) and shape.image.blob == picture.read_bytes()
                            for shape in slide.shapes)
             assert any(shape.has_text_frame and "grounded" in shape.text for shape in slide.shapes)
+
+
+def test_unusable_extra_slot_does_not_discard_fitting_template(tmp_path):
+    profile = _profile(tmp_path)
+    pattern = profile.patterns[0]
+    extra = pattern.slots[1].model_copy(deep=True)
+    extra.shape_id = 99
+    extra.box = Box(left=0, top=0, width=10000, height=10000)
+    pattern.slots.append(extra)
+    pattern.mutable_shape_ids.append(99)
+    pattern.protected_regions.append(extra.box.model_copy())
+    plans = create_variants(profile, _story())
+    for plan in plans:
+        assert plan.slides[0].source_slide_index == 1
+        assert 99 in plan.slides[0].remove_shape_ids
+        assert all(block.source_shape_id != 99 for block in plan.slides[0].blocks)
+
+
+def test_variants_choose_different_fitting_original_compositions(tmp_path):
+    profile = _profile(tmp_path)
+    for index in (2, 3):
+        pattern = profile.patterns[0].model_copy(deep=True)
+        pattern.source_slide_index = index
+        pattern.slots[1].box.width -= index * 100000
+        profile.patterns.append(pattern)
+    plans = create_variants(profile, _story())
+    assert len({plan.slides[0].source_slide_index for plan in plans}) == 3
+    for plan in plans:
+        pattern = profile.patterns[plan.slides[0].source_slide_index - 1]
+        assert all(block.box == next(slot.box for slot in pattern.slots
+                                    if slot.shape_id == block.source_shape_id)
+                   for block in plan.slides[0].blocks)
+
+
+def test_audit_reports_repeated_composition_with_different_content(tmp_path):
+    from exposlides.design_audit import audit_deck
+
+    profile = _profile(tmp_path)
+    story = _story()
+    story.slides = [story.slides[0].model_copy(update={
+        "id": f"slide-{index}", "title": f"Title {index}", "paragraphs": [f"Point {index}"],
+    }) for index in range(4)]
+    plan = create_variants(profile, story)[0]
+    report = audit_deck(plan, profile)
+    assert "repeated_layout" in report.checks
+    assert len([issue for issue in report.issues if issue.rule == "repeated_layout"]) == 1
+    assert not [issue for issue in report.issues if issue.rule == "duplicate_slide"]
+    plan.slides[1].blocks[1].box.width //= 2
+    assert not [issue for issue in audit_deck(plan, profile).issues if issue.rule == "repeated_layout"]
+
+
+def test_single_slide_uses_other_native_compositions_beyond_shared_cover(tmp_path):
+    from exposlides.design_diversity import variant_diversity
+
+    profile = _profile(tmp_path)
+    plain = profile.patterns[0]
+    cover = plain.model_copy(deep=True)
+    cover.source_slide_index, cover.name = 2, "Титульный слайд"
+    cover.slots[1].box.width = int(plain.slots[1].box.width * .8)
+    narrow = plain.model_copy(deep=True)
+    narrow.source_slide_index, narrow.name = 3, "Узкий текст"
+    narrow.slots[1].box.width = int(plain.slots[1].box.width * .6)
+    profile.patterns.extend([cover, narrow])
+    original = profile.model_dump()
+    story = _story()
+
+    variants = create_variants(profile, story)
+
+    assert len({plan.slides[0].source_slide_index for plan in variants}) == 3
+    assert variant_diversity(profile, variants)["sufficient"]
+    assert profile.model_dump() == original
+
+
+def test_content_placeholder_without_text_frame_is_not_a_text_slot(tmp_path):
+    data = _data()
+    fake_text = _element(77, "", 1, 2, 10, 4, "content")
+    fake_text.update(has_text_frame=False, type="shape", text=None)
+    data["slides"][0]["elements"].append(fake_text)
+    profile = _profile(tmp_path, data)
+    assert all(slot.shape_id != 77 for slot in profile.patterns[0].slots)
+    assert any(slot.role == "body" for slot in profile.patterns[0].slots)

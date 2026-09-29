@@ -90,6 +90,10 @@ def audit_deck(plan: DeckPlan, profile: TemplateProfile) -> AuditReport:
     issues = []
     patterns = {p.source_slide_index: p for p in profile.patterns}
     seen = {}
+    previous_layout = None
+    layout_run = 0
+    compositions = []
+    cycle_reported = False
     for slide in plan.slides:
         pattern = patterns[slide.source_slide_index]
         body = [b for b in slide.blocks if b.kind not in {"title", "page_number"}]
@@ -109,6 +113,24 @@ def audit_deck(plan: DeckPlan, profile: TemplateProfile) -> AuditReport:
             issues.append(_issue("duplicate_slide", "warning", slide, None,
                                  f"Содержимое повторяет слайд {seen[signature]}"))
         seen[signature] = slide.id
+        composition = (slide.source_slide_index, tuple(sorted(
+            (block.kind, block.box.left, block.box.top, block.box.width, block.box.height)
+            for block in slide.blocks if block.kind != "page_number"
+        )))
+        layout_run = layout_run + 1 if composition == previous_layout else 1
+        previous_layout = composition
+        compositions.append(composition)
+        for period in range(2, min(4, len(compositions) // 2) + 1):
+            recent = compositions[-period:]
+            if (not cycle_reported and len(set(recent)) > 1
+                    and recent == compositions[-2 * period:-period]):
+                issues.append(_issue("layout_cycle", "warning", slide, None,
+                                     f"Повторяется цикл из {period} композиций шаблона"))
+                cycle_reported = True
+        if layout_run == 3:
+            issues.append(_issue("repeated_layout", "warning", slide, None,
+                                 "Три слайда подряд повторяют композицию шаблона; "
+                                 "проверьте визуальное разнообразие"))
         for block in slide.blocks:
             b = block.box
             if block.style.font not in allowed_fonts:
@@ -118,7 +140,16 @@ def audit_deck(plan: DeckPlan, profile: TemplateProfile) -> AuditReport:
             if block.kind in {"title", "text"} and not 0.8*reference_size <= block.style.size <= reference_size*1.25:
                 issues.append(_issue("type_scale", "warning", slide, block,
                                      "Кегль существенно отличается от исходного образца"))
+            replaced_regions = [
+                box for layer, photos in (("slide", pattern.replaceable_images),
+                                          ("layout", pattern.layout_images))
+                for sid, box in photos.items()
+                if any(b.kind == "image" and b.source_shape_id == sid
+                       and b.source_layer == layer for b in slide.blocks)
+            ]
             for protected in pattern.protected_regions:
+                if protected in replaced_regions:
+                    continue
                 if overlap_area(b, protected) > min(b.width*b.height, protected.width*protected.height)*0.02:
                     issues.append(_issue("protected_overlap", "error", slide, block,
                                          "Контент пересекает защищённый элемент шаблона"))
@@ -126,7 +157,12 @@ def audit_deck(plan: DeckPlan, profile: TemplateProfile) -> AuditReport:
             if block.kind in {"text", "title"} and block.fill and contrast_ratio(block.style.color, block.fill) < rules["minimum_contrast"]:
                 issues.append(_issue("contrast", "warning", slide, block,
                                      f"Контраст текста к заливке ниже {rules['minimum_contrast']}:1"))
-            if b.left < 0 or b.top < 0 or b.left+b.width > plan.width or b.top+b.height > plan.height:
+            native_photo = block.kind == "image" and block.image_fit == "template" and (
+                (pattern.layout_images if block.source_layer == "layout" else pattern.replaceable_images)
+                .get(block.source_shape_id) == b
+            )
+            if not native_photo and (b.left < 0 or b.top < 0 or b.left+b.width > plan.width
+                                     or b.top+b.height > plan.height):
                 issues.append(_issue("outside_slide", "error", slide, block,
                                      "Объект выходит за границы слайда", "move_inside"))
             if block.kind in {"text", "title"} and capacity_risk(block):
@@ -167,7 +203,7 @@ def audit_deck(plan: DeckPlan, profile: TemplateProfile) -> AuditReport:
     return AuditReport(
         issues=issues,
         checks=["outside_slide", "text_capacity", "palette", "placeholder", "empty_slide",
-                "duplicate_slide", "overlap", "bullet_density", "table_density", "chart_density",
+                "duplicate_slide", "repeated_layout", "layout_cycle", "overlap", "bullet_density", "table_density", "chart_density",
                 "slide_bullet_density", "long_bullet", "template_font", "font_count", "type_scale",
                 "protected_overlap", "contrast"],
         limitations=[

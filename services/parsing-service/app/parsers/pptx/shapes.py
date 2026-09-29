@@ -34,6 +34,7 @@ from app.parsers.pptx.helpers import (
 
 from pptx.enum.dml import MSO_COLOR_TYPE, MSO_FILL_TYPE
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.oxml.ns import qn
 from pptx.slide import Slide, SlideLayout
 
 logger = logging.getLogger(__name__)
@@ -123,7 +124,7 @@ def parse_shape(
         if connector is not None:
             return SlideElement(type=ElementType.CONNECTOR, connector=connector, **common)
 
-    if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+    if shape.shape_type == MSO_SHAPE_TYPE.PICTURE or shape._element.tag == qn("p:pic"):
         image = assets_module.parse_image(shape, assets)
         return SlideElement(type=ElementType.IMAGE, image=image, **common)
 

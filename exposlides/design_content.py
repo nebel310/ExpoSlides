@@ -90,6 +90,34 @@ def dataset_source(dataset: Dataset) -> str:
     return "\n".join(facts)
 
 
+def _distinct_word_count(parts: list[str]) -> int:
+    """Не считать повторные фразы и заголовок внутри его же пояснения дважды."""
+    fragments = set()
+    for part in parts:
+        for fragment in re.split(r"[.!?;]\s+|\n+", part):
+            words = re.findall(r"[^\W_]+(?:[-’'][^\W_]+)*", fragment.casefold().replace("ё", "е"))
+            if words:
+                fragments.add(" ".join(words))
+    unique = []
+    for fragment in sorted(fragments, key=len, reverse=True):
+        if not any(f" {fragment} " in f" {existing} " for existing in unique):
+            unique.append(fragment)
+    return sum(len(fragment.split()) for fragment in unique)
+
+
+def story_reference_issues(plan: ContentPlan, request: DesignRequest) -> list[str]:
+    """Ошибки ссылок, при которых нельзя безопасно продолжать сборку."""
+    sources = {item.id for item in source_excerpts(request.script)}
+    datasets = {item.id for item in request.datasets}
+    issues = []
+    for slide in plan.slides:
+        if set(slide.source_ids) - sources:
+            issues.append(f"{slide.id}: неизвестные ссылки на источник")
+        if slide.visual and slide.visual.dataset_id and slide.visual.dataset_id not in datasets:
+            issues.append(f"{slide.id}: неизвестный набор данных")
+    return issues
+
+
 def validate_story(
     plan: ContentPlan, request: DesignRequest, excerpts: list[SourceExcerpt],
 ) -> list[str]:
@@ -116,10 +144,14 @@ def validate_story(
         if slide.visual and slide.visual.dataset_id in datasets:
             source += "\n" + dataset_source(datasets[slide.visual.dataset_id])
         if source:
-            issues.extend(f"{slide.id}: {i}" for i in semantic.semantic_content_issues(source, text))
+            issues.extend(f"{slide.id}: {i}" for i in semantic.semantic_content_issues(
+                source, text, check_required_messages=False,
+            ))
             if slide.notes:
                 issues.extend(f"{slide.id} (заметки): {i}"
-                              for i in semantic.semantic_content_issues(source, slide.notes))
+                              for i in semantic.semantic_content_issues(
+                                  source, slide.notes, check_required_messages=False,
+                              ))
         if slide.visual and slide.visual.dataset_id and slide.visual.dataset_id not in datasets:
             issues.append(f"{slide.id}: неизвестный набор данных")
     whole = "\n".join("\n".join([s.title, *s.paragraphs, *(s.visual.labels if s.visual else [])])
@@ -131,12 +163,45 @@ def validate_story(
     for excerpt in excerpts:
         if not excerpt.required:
             continue
-        attributed = "\n".join(
-            "\n".join([s.title, *s.paragraphs])
-            for s in plan.slides if excerpt.id in s.source_ids
-        )
-        if semantic.missing_required_messages(attributed, [excerpt.text]):
+        attributed_slides = [s for s in plan.slides if excerpt.id in s.source_ids]
+        visible_parts = [
+            part for slide in attributed_slides
+            for part in [slide.title, *slide.paragraphs,
+                         *(slide.visual.labels if slide.visual else [])]
+        ]
+        attributed = "\n".join(visible_parts)
+        # Пояснения допускаются в заметках, но источник должен иметь видимый
+        # содержательный тезис. Числа и явно обязательные сообщения остаются
+        # на слайдах и проверяются отдельно; notes не могут их подменить.
+        details = "\n".join(s.notes for s in plan.slides if excerpt.id in s.source_ids)
+        required = semantic.required_source_messages(excerpt.text)
+        if (semantic.missing_required_messages(attributed + "\n" + details, [excerpt.text])
+                or not semantic.source_topic_visible(excerpt.text, attributed)
+                or semantic.missing_required_messages(attributed, required)):
             issues.append(f"Содержание раздела {excerpt.id} раскрыто не полностью")
+        source_words = _distinct_word_count([excerpt.text])
+        if source_words >= 32:
+            # Это ограниченный порог обеднения, а не требование пересказать источник.
+            # Длинные пояснения остаются в notes; коротким источникам объём не навязывается.
+            # Соседняя тема на слайде с несколькими источниками не заполняет этот раздел.
+            relevant_parts = [
+                fragment for slide in attributed_slides
+                for part in [slide.title, *slide.paragraphs,
+                             *(slide.visual.labels if slide.visual else [])]
+                for fragment in re.split(r"[.!?;]\s+|\n+", part)
+                if len(set(slide.source_ids)) == 1
+                or semantic.source_topic_visible(excerpt.text, fragment)
+            ]
+            visible_words = _distinct_word_count(relevant_parts)
+            minimum = min(50, (source_words + 1) // 2)
+            if visible_words < minimum:
+                issues.append(
+                    f"Содержание раздела {excerpt.id} слишком краткое в видимом тексте: "
+                    f"{visible_words} слов при ориентире не менее {minimum}. "
+                    "Раскройте подтверждённые мысли и пояснения в paragraphs связанных слайдов, "
+                    "переписав их без повторов и без копирования стенограммы. "
+                    "Добавление только notes не исправляет недостаток содержания."
+                )
     number_pattern = re.compile(r"(?<!\w)[−+-]?\d+(?:[.,]\d+)?\s*%?")
     def numbers(value: str) -> set[str]:
         return {

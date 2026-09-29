@@ -131,3 +131,41 @@ def test_outer_deadline_is_not_logged_as_request_timeout(llm, caplog):
     assert "Ответ LLM получен" not in caplog.text
     assert PRIVATE_SOURCE not in caplog.text
     assert PRIVATE_KEY not in caplog.text
+
+
+def test_request_override_allows_longer_stream_without_changing_shared_settings(llm, monkeypatch):
+    monkeypatch.setattr(llm.settings, "llm_fast_api_timeout", 0.001)
+    client = llm.FastLLMClient(stream=True, request_timeout=0.5)
+
+    async def achat(chat):
+        assert chat["stream"] is True
+        await asyncio.sleep(0.01)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok":true}'))])
+
+    client._client = SimpleNamespace(achat=achat)
+    assert asyncio.run(client.generate_json_object("test", {})) == {"ok": True}
+    assert llm.settings.llm_fast_api_timeout == 0.001
+
+
+def test_request_override_is_applied_to_transport_and_deadline(llm):
+    client = llm.FastLLMClient(request_timeout=0.01)
+    assert client.client._timeout == 0.01
+    cancelled = []
+
+    async def achat(chat):
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.append(True)
+
+    client._client = SimpleNamespace(achat=achat)
+    with pytest.raises(llm.LLMGenerationError) as error:
+        asyncio.run(client.generate_json_object("test", {}))
+    assert isinstance(error.value.__cause__, TimeoutError)
+    assert cancelled == [True]
+
+
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
+def test_request_override_rejects_unbounded_timeouts(llm, value):
+    with pytest.raises(ValueError):
+        llm.FastLLMClient(request_timeout=value)

@@ -1,6 +1,6 @@
 schema_version = "1.0"
 id = "designer"
-version = "1.0.0"
+version = "1.2.0"
 description = "Один проверенный план содержания, три варианта верстки, отдельный аудит."
 
 [roles.story]
@@ -8,7 +8,14 @@ model = "qwen_3_8_27b"
 task = "text"
 prompt = "prompts/designer/story.md"
 attempts = 3
-timeout_seconds = 180
+timeout_seconds = 240
+
+[roles.story.prompts]
+correction = "prompts/designer/story_correction.md"
+correction_patch = "prompts/designer/story_correction_patch.md"
+correction_full = "prompts/designer/story_correction_full.md"
+repair_requirements = "prompts/designer/story_repair_requirements.md"
+editorial_repair = "prompts/designer/story_editorial_repair.md"
 
 [roles.contextual_auditor]
 model = "qwen_3_8_27b"
@@ -20,11 +27,11 @@ concurrency = 3
 enabled_default = false
 
 [roles.image_illustrator]
-model = "flux_1_schnell"
+model = "z_image_turbo"
 task = "text-to-image"
 prompt = "prompts/designer/image.md"
 attempts = 1
 timeout_seconds = 90
 enabled_default = false
-inference_steps = 4
+inference_steps = 8
 guidance_scale = 0.0

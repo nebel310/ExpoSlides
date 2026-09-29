@@ -6,13 +6,70 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+from pptx.opc.oxml import serialize_part_xml
+from pptx.opc.package import XmlPart
 from pptx.opc.packuri import PackURI
 from pptx.oxml import parse_xml
 from pptx.oxml.ns import qn
+from pptx.oxml.xmlchemy import OxmlElement
 
 
 class NativeBuildError(ValueError):
     """Шаблон или план нельзя безопасно собрать в редактируемую презентацию."""
+
+
+def _prune_source_navigation(presentation: Any) -> None:
+    """Убрать навигацию исходной колоды, не подходящую новым копиям слайдов.
+
+    Показы, диапазоны показа и разделы описывают исходные слайды. Новая колода
+    может повторять образцы и менять порядок, поэтому начинается с полного показа
+    без исходного разбиения. Сам загруженный PPTX при этом не меняется.
+    """
+    xml = presentation.part._element
+    shows = xml.find(qn("p:custShowLst"))
+    if shows is not None:
+        xml.remove(shows)
+    section_tag = "{http://schemas.microsoft.com/office/powerpoint/2010/main}sectionLst"
+    for sections in list(xml.iter(section_tag)):
+        parent = sections.getparent()
+        parent.remove(sections)
+        # Другие расширения, в том числе соседи списка разделов, сохраняются.
+        if parent.tag == qn("p:ext") and len(parent) == 0:
+            extensions = parent.getparent()
+            extensions.remove(parent)
+            if extensions.tag == qn("p:extLst") and len(extensions) == 0:
+                extensions.getparent().remove(extensions)
+
+    try:
+        properties = presentation.part.part_related_by(RT.PRES_PROPS)
+    except KeyError:
+        return
+    properties_xml = parse_xml(properties.blob)
+    show = properties_xml.find(qn("p:showPr"))
+    if show is None:
+        return
+    selectors = [child for child in show if child.tag in {qn("p:custShow"), qn("p:sldRg")}]
+    if not selectors:
+        return
+    position = min(show.index(child) for child in selectors)
+    for selector in selectors:
+        show.remove(selector)
+    if show.find(qn("p:sldAll")) is None:
+        show.insert(position, OxmlElement("p:sldAll"))
+    if isinstance(properties, XmlPart):
+        properties._element = properties_xml
+    else:
+        properties.blob = serialize_part_xml(properties_xml)
+
+
+def _prune_custom_show_actions(presentation: Any) -> None:
+    """Ссылки на удалённые показы убираются и в копиях, и в общих макетах."""
+    for part in presentation.part.package.iter_parts():
+        if isinstance(part, XmlPart):
+            for element in list(part._element.iter(qn("a:hlinkClick"), qn("a:hlinkHover"))):
+                action = element.get("action", "").partition("?")[0].lower()
+                if action == "ppaction://customshow":
+                    element.getparent().remove(element)
 
 
 class _PartCloner:
@@ -80,18 +137,20 @@ def clone_selected_slides(presentation: Any, source_indices: list[int]) -> list[
     sources = list(presentation.slides)
     if any(index < 1 or index > len(sources) for index in source_indices):
         raise NativeBuildError("План ссылается на отсутствующий слайд шаблона")
-    xml = presentation.part._element
-    if xml.find(qn("p:custShowLst")) is not None or any(
-        element.tag.endswith("}sectionLst") for element in xml.iter()
-    ):
-        raise NativeBuildError(
-            "Шаблон содержит custom shows или sections: их перенос в новую колоду пока не поддерживается"
-        )
     selected = [sources[index - 1].part for index in source_indices]
     clones = _PartCloner(presentation, selected).populate(selected)
+    _prune_source_navigation(presentation)
     slide_ids = presentation.slides._sldIdLst
     old_ids = list(slide_ids)
     for element in old_ids:
+        # drop_rel допускает одну оставшуюся ссылку: проверяем до удаления записи,
+        # чтобы неизвестное расширение не получило переиспользованный rId копии.
+        references = sum(
+            node.get(qn("r:id")) == element.rId
+            for node in presentation.part._element.iter()
+        )
+        if references > 1:
+            raise NativeBuildError("PPTX содержит дополнительные ссылки на исходный слайд")
         slide_ids.remove(element)
         presentation.part.drop_rel(element.rId)
         if element.rId in presentation.part.rels:
@@ -103,6 +162,7 @@ def clone_selected_slides(presentation: Any, source_indices: list[int]) -> list[
         timing = clone._element.find(qn("p:timing"))
         if timing is not None:
             clone._element.remove(timing)
+    _prune_custom_show_actions(presentation)
     return [part.slide for part in clones]
 
 
@@ -133,3 +193,41 @@ def remove_shapes(slide: Any, shape_ids: list[int]) -> None:
     missing = requested - found
     if missing:
         raise NativeBuildError(f"Не найдены заменяемые фигуры: {sorted(missing)}")
+
+
+def isolate_slide_layout(presentation: Any, slide: Any) -> Any:
+    """Собственный layout/master для замены фото без изменения соседних слайдов."""
+    from pptx.oxml.xmlchemy import OxmlElement
+
+    layout = slide.slide_layout.part
+    master = slide.slide_layout.slide_master.part
+    cloner = _PartCloner(presentation, [layout, master])
+    new_layout, new_master = cloner.populate([layout, master])
+
+    def relink(source, target, replacements):
+        targets = {rel.target_part.partname: replacements.get(rel.target_part, rel.target_part)
+                   for rel in source.rels.values() if not rel.is_external}
+        target.load_rels_from_xml(parse_xml(source.rels.xml), targets)
+
+    relink(layout, new_layout, {master: new_master})
+    relink(master, new_master, {layout: new_layout})
+    # В новом master регистрируем только собственный layout; тема и декор прежние.
+    listing = new_master._element.find(qn("p:sldLayoutIdLst"))
+    if listing is None:
+        raise NativeBuildError("У мастера отсутствует реестр макетов")
+    for entry in list(listing):
+        rid = entry.get(qn("r:id"))
+        if new_master.related_part(rid) is not new_layout:
+            listing.remove(entry)
+            new_master.drop_rel(rid)
+    if len(listing) != 1:
+        raise NativeBuildError("Исходный макет не зарегистрирован в мастере")
+    relink(slide.part, slide.part, {layout: new_layout})
+    rid = presentation.part.relate_to(new_master, RT.SLIDE_MASTER)
+    masters = presentation.part._element.get_or_add_sldMasterIdLst()
+    entry = OxmlElement("p:sldMasterId")
+    entry.set("id", str(max([int(e.get("id", 2147483647)) for e in masters]
+                            + [2147483647]) + 1))
+    entry.set(qn("r:id"), rid)
+    masters.append(entry)
+    return new_layout.slide_layout

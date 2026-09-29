@@ -29,29 +29,58 @@ def _block(slot: Slot, source: StorySlide, items: list[str], kind: str) -> Place
         text=source.title if kind == "title" else "", items=items,
     )
     minimum = min(style.size, max(14, style.size * 0.8))
-    while _load(block) > 1 and block.style.size > minimum:
+    # Короткий заголовок не дробим, если строка достижима при допустимом кегле.
+    # Уменьшение, которое всё равно оставит перенос, само по себе не помогает.
+    single_line = (kind == "title" and _short_title(source.title)
+                   and _line_count(block, minimum) == 1)
+    while block.style.size > minimum and (
+        _load(block) > 1 or (single_line and _line_count(block) > 1)
+    ):
         block.style.size = max(minimum, block.style.size - 1)
     return block
 
 
-def _load(block: PlacedBlock) -> float:
+def _short_title(text: str) -> bool:
+    return len(text) <= 32 and len(text.split()) <= 3 and len(text.splitlines()) == 1
+
+
+def _line_count(block: PlacedBlock, size: float | None = None) -> int:
     # Оцениваем каждый исходный слот отдельно, а не пустоту между ними.
     width = max(1, block.box.width / 12700 - 32)
-    columns = max(1, int(width / (block.style.size * 0.60)))
-    lines = sum(max(1, math.ceil(len(line) / columns))
-                for text in (block.items or [block.text]) for line in text.splitlines())
-    return (lines * block.style.size * 1.25 + 12) / (block.box.height / 12700)
+    columns = max(1, int(width / ((size if size is not None else block.style.size) * 0.60)))
+    return sum(max(1, math.ceil(len(line) / columns))
+               for text in (block.items or [block.text]) for line in text.splitlines())
+
+
+def _load(block: PlacedBlock) -> float:
+    if not block.text and not block.items:
+        return 0.0
+    return (_line_count(block) * block.style.size * 1.25 + 12) / (block.box.height / 12700)
 
 
 def _assign(pattern: SlidePattern, source: StorySlide) -> list[PlacedBlock] | None:
     titles, bodies = _slots(pattern, "title"), _slots(pattern, "body")
-    if len(titles) != 1 or not bodies or len(bodies) > 12:
+    bodies = [slot for slot in bodies if not re.search(
+        r"иконки можно брать|число разделов\s*=|точки используются для навигации",
+        slot.text, re.I,
+    )]
+    if len(titles) != 1 or not bodies:
         return None
-    slots = [*titles, *bodies]
-    if any(overlap(slot.box, region) for slot in slots for region in pattern.protected_regions):
+    if any(overlap(titles[0].box, region) for region in pattern.protected_regions):
         return None
-    if any(overlap(first.box, second.box)
-           for index, first in enumerate(slots) for second in slots[index + 1:]):
+    # Служебная подпись или пересекающийся неиспользуемый слот не должны
+    # отбрасывать весь макет. Выбираем безопасные области, остальные очищает builder.
+    available = [slot for slot in bodies
+                 if not overlap(slot.box, titles[0].box)
+                 and not any(overlap(slot.box, region) for region in pattern.protected_regions)]
+    selected = []
+    for slot in sorted(available, key=lambda slot: -slot.box.width * slot.box.height):
+        if not any(overlap(slot.box, other.box) for other in selected):
+            selected.append(slot)
+        if len(selected) == 12:
+            break
+    bodies = sorted(selected, key=lambda slot: (round(slot.box.top / 100000), slot.box.left))
+    if not bodies:
         return None
     count = min(len(bodies), len(source.paragraphs))
     # Непрерывные группы сохраняют порядок тезисов. Все исходные области
@@ -81,7 +110,7 @@ def _cover(pattern: SlidePattern) -> bool:
 def _specialized(pattern: SlidePattern) -> bool:
     sample = " ".join([pattern.name, *[slot.text for slot in pattern.slots]]).lower()
     return bool(re.search(
-        r"скриншот|мокап|оформление кода|телефон|qr|спикер|имя\s*фамилия|screenshot|mockup",
+        r"скриншот|мокап|оформление кода|телефон|qr|спикер|имя\s*фамилия|screenshot|mockup|цитата|таймлайн|ганта|фактоид",
         sample,
     ))
 
@@ -131,13 +160,45 @@ def cover_brief(profile: TemplateProfile) -> dict:
             "subtitle_max_characters": min(120, budget(body, body.box.height))}
 
 
+def composition_key(pattern: SlidePattern) -> tuple:
+    """Геометрия и типографика, без номера слайда, id фигур и текста образца."""
+    def box_key(box):
+        return tuple(round(value / 12700) for value in box.model_dump().values())
+
+    return (
+        tuple(sorted((slot.role, box_key(slot.box), slot.style.font, round(slot.style.size, 1))
+                     for slot in pattern.slots if slot.role in {"title", "body"})),
+        tuple(sorted(box_key(box) for box in pattern.protected_regions)),
+        tuple(sorted(box_key(box) for box in [*pattern.replaceable_images.values(),
+                                             *pattern.layout_images.values()])),
+    )
+
+
+def composition_family(pattern: SlidePattern) -> tuple[int, bool]:
+    """Число безопасных текстовых блоков и наличие крупной графики/фотографии."""
+    sample = StorySlide(id="sample", title="Тема", paragraphs=["Тезис"],
+                        source_ids=["source-1"])
+    blocks = _assign(pattern, sample) or []
+    count = sum(block.kind == "text" and block.box.width >= 100 * 12700
+                and block.box.height >= 36 * 12700 for block in blocks)
+    graphic = bool(pattern.replaceable_images or pattern.layout_images) or any(
+        region.width * region.height >= pattern.content_box.width * pattern.content_box.height * .35
+        for region in pattern.protected_regions
+    )
+    return count, graphic
+
+
 def native_layout(profile: TemplateProfile, source: StorySlide, variant: str,
                   index: int, previous: tuple[int, ...] = (),
+                  alternatives: tuple[int, ...] = (),
+                  *, require_image: bool = False, prefer_cover: bool = True,
                   ) -> tuple[SlidePattern, list[PlacedBlock]] | None:
     """Выбрать композицию по числу тезисов и вместимости реальных областей."""
     choices = []
     desired = {"story": 1, "evidence": 2, "cards": len(source.paragraphs)}[variant]
     for pattern in profile.patterns:
+        if require_image and not (pattern.replaceable_images or pattern.layout_images):
+            continue
         # Макеты с диаграммами не превращаем в текстовые страницы.
         if pattern.visual_shape_ids:
             continue
@@ -156,6 +217,7 @@ def native_layout(profile: TemplateProfile, source: StorySlide, variant: str,
         if any(region.width * region.height > profile.width * profile.height * 0.2
                for region in pattern.protected_regions):
             cost -= 2
+        cost += alternatives.count(pattern.source_slide_index) * 12
         cost += previous.count(pattern.source_slide_index) * 5
         if previous and previous[-1] == pattern.source_slide_index:
             cost += 3
@@ -170,5 +232,151 @@ def native_layout(profile: TemplateProfile, source: StorySlide, variant: str,
         return None
     # Разнообразие не оправдывает переполнение: сначала выбираем вместимые макеты.
     fitting = [choice for choice in choices if _overflow(profile, choice[3]) == 0]
-    _, _, pattern, blocks = min(fitting or choices, key=lambda item: item[:2])
+    fitting = [choice for choice in fitting if all(_load(b) <= 1 for b in choice[3])] or fitting
+    complete = [choice for choice in fitting if not any(
+        block.kind == "text" and not block.items
+        and block.box.width >= 100 * 12700 and block.box.height >= 36 * 12700
+        for block in choice[3]
+    )]
+    pool = complete or fitting or choices
+    covers = ([choice for choice in fitting if _cover(choice[2])]
+              if index == 0 and prefer_cover else [])
+    if index:
+        ordinary = [choice for choice in pool if not _cover(choice[2])]
+        pool = ordinary or pool
+    # Обложка сохраняет отдельную роль; содержательные слайды чередуют композиции.
+    pool = covers or pool
+    if fitting:
+        # Разнообразие не должно дробить короткий заголовок. Если одна строка
+        # недостижима во всех подходящих образцах, сохраняем допустимые переносы.
+        if _short_title(source.title):
+            single_line = [choice for choice in pool if _line_count(choice[3][0]) == 1]
+            pool = single_line or pool
+        keys = {pattern.source_slide_index: composition_key(pattern) for pattern in profile.patterns}
+        # При наличии вместимой альтернативы не повторяем соседнюю композицию,
+        # даже если глобальные счётчики семейств предпочитают её повторить.
+        if previous and previous[-1] in keys:
+            different_neighbor = [choice for choice in pool
+                                  if keys[choice[1]] != keys[previous[-1]]]
+            pool = different_neighbor or pool
+        # Разные координаты одного текстового поля не дают разного ритма.
+        # Множество простых образцов не должно вытеснять повтор подходящего фото.
+        families = {pattern.source_slide_index: composition_family(pattern)
+                    for pattern in profile.patterns}
+        previous_families = [families[index] for index in previous if index in families]
+        least_family = min(previous_families.count(families[choice[1]]) for choice in pool)
+        pool = [choice for choice in pool
+                if previous_families.count(families[choice[1]]) == least_family]
+        # Внутри подходящего семейства сначала пробуем новую геометрию.
+        # Другой source index сам по себе не означает новую композицию.
+        previous_keys = [keys[index] for index in previous if index in keys]
+        least = min(previous_keys.count(keys[choice[1]]) for choice in pool)
+        pool = [choice for choice in pool if previous_keys.count(keys[choice[1]]) == least]
+        alternative_keys = {keys[index] for index in alternatives if index in keys}
+        different = [choice for choice in pool if keys[choice[1]] not in alternative_keys]
+        pool = different or pool
+        matching = [choice for choice in pool if sum(
+            block.kind == "text" and bool(block.items) for block in choice[3]
+        ) == len(source.paragraphs)]
+        pool = matching or pool
+
+    def key(item):
+        # Если набор мал, меняем соседство, а не запускаем прежний круг макетов.
+        transitions = sum(a == previous[-1] and b == item[1]
+                          for a, b in zip(previous, previous[1:])) if previous else 0
+        return (transitions, item[0], item[1])
+
+    _, _, pattern, blocks = min(pool, key=key)
     return pattern, blocks
+
+
+def composition_brief(profile: TemplateProfile, slide_count: int) -> dict:
+    """Число смысловых блоков пригодных макетов; текст образцов не передаётся LLM."""
+    sample = StorySlide(id="sample", title="Тема", paragraphs=["Короткий тезис"],
+                        source_ids=["source-1"])
+    candidates, title_budgets, seen = [], [], set()
+    body_budgets = []
+    for pattern in profile.patterns:
+        if _cover(pattern) or _specialized(pattern) or pattern.visual_shape_ids:
+            continue
+        blocks = _assign(pattern, sample)
+        if not blocks:
+            continue
+        bodies = [block for block in blocks if block.kind == "text"
+                  and block.box.width >= 100 * 12700 and block.box.height >= 36 * 12700]
+        count = len(bodies)
+        if not 1 <= count <= 6:
+            continue
+        filled = _assign(pattern, sample.model_copy(update={"paragraphs": ["Короткий тезис"] * count}))
+        if filled and _overflow(profile, filled) == 0:
+            key = composition_key(pattern)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append((pattern, count))
+            title = blocks[0]
+            size = min(title.style.size, max(14, title.style.size * .8))
+            columns = max(1, int((title.box.width / 12700 - 32) / (size * .60)))
+            lines = max(1, int((title.box.height / 12700 - 12) / (size * 1.25)))
+            title_budgets.append(max(1, int(columns * lines * .85)))
+            # Оцениваем настоящие области при исходном кегле, не уменьшая шрифт
+            # ради обещанного объёма. Запас учитывает переносы и разбиение на абзацы.
+            characters = 0
+            for block in bodies:
+                slot = next(slot for slot in pattern.slots
+                            if slot.shape_id == block.source_shape_id)
+                size = max([slot.style.size, *slot.paragraph_font_sizes])
+                columns = max(0, int((block.box.width / 12700 - 32) / (size * .60)))
+                lines = max(0, int((block.box.height / 12700 - 12) / (size * 1.25)))
+                # Однострочные подписи не задают бюджет содержательного слайда.
+                if columns >= 8 and lines >= 2:
+                    characters += int(columns * lines * .8)
+            if characters:
+                body_budgets.append({
+                    "source_slide_index": pattern.source_slide_index,
+                    "paragraph_count": count,
+                    "max_characters": characters,
+                    "max_words": max(1, characters // 7),
+                })
+    brief = {"content_title_max_characters": min(80, min(title_budgets))} if title_budgets else {}
+    if body_budgets:
+        brief.update(
+            body_text_budgets=body_budgets,
+            body_text_guidance="Бюджеты основного текста приблизительны: выбери вместимый макет "
+                               "для содержательного раскрытия источника. Не сокращай все слайды "
+                               "до бюджета самого узкого макета. Это не обязательный объём и не "
+                               "гарантия вместимости: её отдельно проверяет приложение. Если "
+                               "исходного материала мало, не добавляй текст ради заполнения.",
+        )
+    if not candidates:
+        return brief
+    has_cover = slide_count > 1 and bool(cover_patterns(profile))
+    # Выбираем представителей всего каталога, а не первые страницы шаблона.
+    # Дубликаты и множество одноколоночных образцов не вытесняют карточки/фото.
+    counts, families = [], []
+    family_by_index = {pattern.source_slide_index: composition_family(pattern)
+                       for pattern, _ in candidates}
+    while candidates and len(counts) < slide_count - int(has_cover):
+        pattern, count = min(candidates, key=lambda item: (
+            families.count(family_by_index[item[0].source_slide_index]),
+            counts.count(item[1]), abs(item[1] - 3),
+            -int(family_by_index[item[0].source_slide_index][1]),
+            composition_key(item[0]),
+        ))
+        candidates.remove((pattern, count))
+        counts.append(count)
+        families.append(family_by_index[pattern.source_slide_index])
+    # При нехватке макетов не навязываем повторение цикла.
+    sequence = ([(1, True)] if has_cover else []) + [
+        (count, family[1]) for count, family in zip(counts, families, strict=True)
+    ]
+    # Просторное одиночное поле вмещает несколько тезисов. Один физический слот
+    # не должен заставлять модель сворачивать всё содержание в одно предложение.
+    hints = {str(index + 1): count for index, (count, graphic) in enumerate(sequence)
+             if count > 1 or graphic}
+    if not hints:
+        return brief
+    return brief | {"paragraph_counts": hints,
+            "instruction": "Распредели материал по числу смысловых блоков макетов. "
+                           "Каждый блок — самостоятельная мысль с необходимым пояснением. "
+                           "Не добавляй неподтверждённые сведения ради количества."}

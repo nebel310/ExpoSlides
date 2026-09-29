@@ -46,12 +46,12 @@ def test_optional_image_saves_verified_bytes_and_provenance(
     result = asyncio.run(run())
     assert result.status == "completed"
     assert Path(result.path).read_bytes() == image
-    assert result.model == "black-forest-labs/FLUX.1-schnell"
+    assert result.model == "Tongyi-MAI/Z-Image-Turbo"
     assert result.license == "Apache-2.0"
     assert result.seed == 7 and result.source_ids == ["source-1"]
     assert (result.width, result.height) == (32, 16)
     payload = json.loads(calls[0].content)
-    assert payload["parameters"]["num_inference_steps"] == 4
+    assert payload["parameters"]["num_inference_steps"] == 8
     assert payload["parameters"]["seed"] == 7
     assert "0077FF" in payload["inputs"]
     assert "test-key" not in result.model_dump_json()

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import re
 import ssl
 from typing import Any, Type, TypeVar
@@ -447,7 +448,11 @@ class InvalidLLMGenerationError(LLMGenerationError):
 class FastLLMClient(LLMClient):
     """Отменяемые запросы с ограниченным повтором временных HTTP-ошибок."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, stream: bool = False, request_timeout: float | None = None) -> None:
+        if request_timeout is not None and (not math.isfinite(request_timeout) or request_timeout <= 0):
+            raise ValueError("request_timeout must be finite and positive")
+        self._request_timeout = request_timeout
+        self._stream = stream
         # Lazy init сохраняет независимость стандартного клиента и его настроек.
         self._client: ChatCompletionsClient | None = None
 
@@ -457,7 +462,7 @@ class FastLLMClient(LLMClient):
             self._client = ChatCompletionsClient(
                 base_url=settings.llm_base_url,
                 api_key=settings.llm_api_key,
-                timeout=settings.llm_fast_api_timeout,
+                timeout=self._request_timeout or settings.llm_fast_api_timeout,
             )
         return self._client
 
@@ -490,11 +495,13 @@ class FastLLMClient(LLMClient):
             )
         request_model = model or settings.llm_fast_model
         chat = self._chat_payload(prompt, schema, strict, request_model)
+        if self._stream:
+            chat["stream"] = True
         logger.info("Быстрый запрос LLM. Модель: %s", request_model)
         logger.debug("Промпт:\n%s", prompt)
         loop = asyncio.get_running_loop()
         started_at = loop.time()
-        timeout_limit = settings.llm_fast_api_timeout
+        timeout_limit = self._request_timeout or settings.llm_fast_api_timeout
         request_deadline = asyncio.timeout(timeout_limit)
         try:
             async with request_deadline:

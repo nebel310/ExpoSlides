@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 
 from exposlides.design_audit import capacity_risk
+from exposlides.design_data import cell_text
 from exposlides.design_geometry import clip, free_box
 from exposlides.design_models import (
     Box,
@@ -210,7 +211,24 @@ def _split_visuals(box: Box, count: int, variant: str, gap: int,
     )
 
 
-def _visual_block(source: StorySlide, pattern: SlidePattern, box: Box, variant: str) -> PlacedBlock:
+def _table_fits(dataset: Dataset, box: Box, font_size: float) -> bool:
+    """Оценка ячеек с теми же равными колонками и отступами, что у builder."""
+    width = box.width / 12700 / len(dataset.columns) - 12
+    height = box.height / 12700 / (len(dataset.rows) + 1) - 8
+    if width < font_size * 0.60 or height < font_size * 1.1:
+        return False
+    capacity = max(1, int(width / (font_size * 0.60)))
+    for row in (dataset.columns, *dataset.rows):
+        for value in row:
+            lines = sum(max(1, math.ceil(len(line) / capacity))
+                        for line in (cell_text(value).splitlines() or [""]))
+            if lines * font_size * 1.1 > height:
+                return False
+    return True
+
+
+def _visual_block(source: StorySlide, pattern: SlidePattern, box: Box, variant: str,
+                  datasets: dict[str, Dataset]) -> PlacedBlock:
     visual = source.visual
     common = dict(
         id=f"{source.id}-visual",
@@ -220,7 +238,17 @@ def _visual_block(source: StorySlide, pattern: SlidePattern, box: Box, variant: 
         fill=_accent(pattern),
     )
     if visual.kind in {"table", "bar", "line", "pie"}:
-        table = visual.kind == "table" or variant == "evidence"
+        dataset = datasets.get(visual.dataset_id)
+        if dataset is None:
+            raise ValueError(f"{source.id}: неизвестный набор данных")
+        fits = _table_fits(dataset, box, pattern.body_style.size)
+        if visual.kind == "table" and not fits:
+            raise ValueError(
+                f"{source.id}: таблица «{dataset.name}» не помещается в области шаблона "
+                "при читаемом размере текста. Выберите график или разделите данные "
+                "на несколько таблиц; строки не обрезаются."
+            )
+        table = visual.kind == "table" or (variant == "evidence" and fits)
         return PlacedBlock(
             kind="table" if table else "chart",
             dataset_id=visual.dataset_id,
@@ -253,22 +281,57 @@ def create_variants(
     *,
     generated_image: Path | None = None,
     image_slide_id: str | None = None,
+    generated_images: dict[str, Path | list[Path]] | None = None,
+    template_images_only: bool = False,
 ) -> list[DeckPlan]:
     """Варианты выбирают исходные композиции; текстовые слоты сохраняют оформление."""
     if image_slide_id and image_slide_id not in {slide.id for slide in story.slides}:
         raise ValueError("Для изображения указан отсутствующий слайд истории")
     image_target = image_slide_id or story.slides[0].id
+    images = dict(generated_images or {})
+    if generated_image is not None:
+        if images:
+            raise ValueError("Нельзя одновременно передать одиночное изображение и набор")
+        images[image_target] = generated_image
+    if images.keys() - {slide.id for slide in story.slides}:
+        raise ValueError("Для изображения указан отсутствующий слайд истории")
+    dataset_by_id = {dataset.id: dataset for dataset in datasets or []}
     results = []
     for variant, (name, description) in VARIANTS.items():
         slides = []
         for index, source in enumerate(story.slides):
-            has_image = generated_image is not None and source.id == image_target
+            image = images.get(source.id)
+            has_image = image is not None
             native = native_layout(profile, source, variant, index,
-                                   tuple(slide.source_slide_index for slide in slides)) if not (
-                source.visual or has_image
+                                   tuple(slide.source_slide_index for slide in slides),
+                                   tuple(plan.slides[index].source_slide_index for plan in results),
+                                   require_image=has_image and not template_images_only,
+                                   prefer_cover=len(story.slides) > 1) if not (
+                source.visual
             ) else None
+            # Автоиллюстрация заполняет только область фото выбранного шаблона.
+            # Она не меняет композицию и не переводит текст в свободную верстку.
+            if template_images_only and (native is None or not (
+                native[0].replaceable_images or native[0].layout_images
+            )):
+                image, has_image = None, False
             if native is not None:
                 pattern, blocks = native
+                if has_image:
+                    slide_images = image if isinstance(image, list) else [image]
+                    photo_count = len(pattern.replaceable_images) + len(pattern.layout_images)
+                    if len(slide_images) < photo_count:
+                        raise ValueError("Для каждой фотообласти слайда нужна отдельная иллюстрация")
+                    image_iterator = iter(slide_images)
+                    for layer, photos in (("slide", pattern.replaceable_images),
+                                          ("layout", pattern.layout_images)):
+                        for shape_id, photo_box in photos.items():
+                            blocks.append(PlacedBlock(
+                                id=f"{source.id}-image-{layer}-{shape_id}", kind="image",
+                                image_path=str(next(image_iterator)), image_fit="template", source_layer=layer,
+                                source_shape_id=shape_id, box=photo_box.model_copy(),
+                                style=pattern.body_style, source_ids=source.source_ids,
+                            ))
                 for slot in pattern.slots:
                     if slot.role == "page_number":
                         original = slot.text.strip()
@@ -317,7 +380,9 @@ def create_variants(
             if visual_count:
                 text_box, visual_boxes = _split_visuals(box, visual_count, variant, gap, source, pattern)
                 if source.visual:
-                    blocks.append(_visual_block(source, pattern, visual_boxes.pop(0), variant))
+                    blocks.append(_visual_block(
+                        source, pattern, visual_boxes.pop(0), variant, dataset_by_id,
+                    ))
                 if has_image:
                     blocks.append(
                         PlacedBlock(
@@ -325,7 +390,7 @@ def create_variants(
                             kind="image",
                             box=visual_boxes[0],
                             style=pattern.body_style,
-                            image_path=str(generated_image),
+                            image_path=str(image),
                             source_ids=source.source_ids,
                         )
                     )
@@ -412,7 +477,8 @@ def create_variants(
                     story_slide_id=source.id,
                     source_slide_index=pattern.source_slide_index,
                     blocks=blocks,
-                    remove_shape_ids=[sid for sid in pattern.mutable_shape_ids if sid not in {
+                    remove_shape_ids=[sid for sid in [*pattern.mutable_shape_ids,
+                        *(pattern.replaceable_images if has_image else [])] if sid not in {
                         block.source_shape_id for block in blocks
                         if block.kind in {"text", "title", "page_number"}
                     }],
@@ -431,3 +497,24 @@ def create_variants(
             )
         )
     return results
+
+
+def story_layout_issues(profile: TemplateProfile, story: ContentPlan,
+                        datasets: list[Dataset] | None = None,
+                        *, ignore_cover: bool = False) -> list[str]:
+    """Переполнение тела слайда исправляется до генерации изображений и сборки."""
+    from exposlides.design_audit import capacity_risk
+
+    try:
+        variants = create_variants(profile, story, datasets)
+    except ValueError as error:
+        return [f"История не помещается в шаблон: {error}"]
+    overloaded = dict.fromkeys(
+        slide.story_slide_id for plan in variants
+        for slide in plan.slides[int(ignore_cover):]
+        if any(block.kind == "text" and capacity_risk(block) for block in slide.blocks)
+    )
+    return [f"{slide_id}: текст не помещается в области шаблона. Перепишите тезисы "
+            "короче, уберите повторы, перенесите пояснения в notes; сохраните "
+            "числа и обязательные сообщения видимыми. Не добавляйте новые абзацы."
+            for slide_id in overloaded]

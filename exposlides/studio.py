@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import errno
 import hmac
 import json
 import mimetypes
@@ -24,7 +25,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from exposlides.design_content import source_excerpts, validate_story
+from exposlides.design_content import source_excerpts, story_reference_issues, validate_story
 from exposlides.design_models import ContentPlan, DesignRequest, TemplateProfile
 from exposlides.design_pipeline import (
     ROOT,
@@ -33,12 +34,12 @@ from exposlides.design_pipeline import (
     DesignPipeline,
     save_model,
 )
+from exposlides.template_compat import prepare_template
 from exposlides.web import (
     EXAMPLE_SCRIPT,
     MAX_REQUEST_BYTES,
     MAX_TEMPLATE_BYTES,
     APIError,
-    inspect_template,
     make_example,
 )
 
@@ -91,6 +92,27 @@ class Studio:
                 if not IDENTIFIER.fullmatch(job["id"]):
                     continue
                 if job["status"] in {"queued", "running", "cancelling"}:
+                    if job.get("operation") in {"build", "generate"} and not job.get("variants"):
+                        try:
+                            published = json.loads(
+                                (path.parent / "variants.json").read_text(encoding="utf-8"),
+                            )
+                            if isinstance(published, list) and all(
+                                isinstance(variant, dict)
+                                and variant.get("id") in VARIANTS
+                                and type(variant.get("revision")) is int
+                                and variant["revision"] >= 1
+                                and isinstance(variant.get("exports"), dict)
+                                and all(isinstance(value, str)
+                                        for value in variant["exports"].values())
+                                and isinstance(variant.get("preview_urls"), list)
+                                and all(isinstance(value, str)
+                                        for value in variant["preview_urls"])
+                                for variant in published
+                            ):
+                                job["variants"] = published
+                        except (ValueError, OSError):
+                            pass
                     recoverable = job.get("operation") == "fix" and bool(job.get("variants"))
                     job.update(status="completed" if recoverable else "failed",
                                error="Сервер перезапущен во время выполнения")
@@ -135,16 +157,24 @@ class Studio:
                 raise HTTPException(404, "Шаблон не найден")
         return path
 
+    def _require_disk_space(self, extra_bytes: int = 0) -> None:
+        if shutil.disk_usage(self.root).free < 256 * 1024 * 1024 + extra_bytes:
+            raise HTTPException(507, "На сервере недостаточно места. Материалы сохранены в форме; "
+                                "повторите попытку после освобождения места.")
+
     def add_template(self, name: str, data: bytes, owner_id: str | None = None):
         if len(data) > MAX_TEMPLATE_BYTES:
             raise HTTPException(413, "Шаблон превышает 25 МБ")
+        self._require_disk_space(len(data) * 3)
         try:
-            metadata = inspect_template(data, name, require_placeholders=False)
+            working, metadata = prepare_template(data, name)
         except (ValueError, APIError) as error:
             raise HTTPException(422, str(error)) from error
         template_id = uuid4().hex
         path = self.root / "templates" / f"{template_id}.pptx"
         path.write_bytes(data)
+        if working != data:
+            path.with_suffix(".compatible.pptx").write_bytes(working)
         metadata["id"] = template_id
         metadata["_owner_id"] = owner_id
         save_model(path.with_suffix(".json"), metadata)
@@ -180,6 +210,7 @@ class Studio:
 
     def start(self, payload: PlanInput, owner_id: str | None = None, *, auto_build: bool = False):
         template = self.template(payload.template_id, owner_id)
+        self._require_disk_space()
         if payload.request.mode == "llm" and not self.capabilities(refresh=True)["story"]:
             if auto_build:
                 raise HTTPException(422, "Сервис генерации временно недоступен. Попробуйте позже.")
@@ -193,7 +224,10 @@ class Studio:
             identifier = uuid4().hex
             directory = self.directory(identifier)
             directory.mkdir()
-            shutil.copyfile(template, directory / "template.pptx")
+            compatible = template.with_suffix(".compatible.pptx")
+            shutil.copyfile(
+                compatible if compatible.is_file() else template, directory / "template.pptx",
+            )
             save_model(directory / "request.json", payload.request)
             job = {"id": identifier, "template_id": payload.template_id, "_owner_id": owner_id,
                    "created_at": time.time(),
@@ -215,9 +249,12 @@ class Studio:
             request = DesignRequest.model_validate_json(
                 (self.directory(job_id) / "request.json").read_text(encoding="utf-8"),
             )
-            errors = validate_story(story, request, source_excerpts(request.script))
+            errors = story_reference_issues(story, request)
+            if request.mode != "llm":
+                errors.extend(validate_story(story, request, source_excerpts(request.script)))
             if errors:
                 raise HTTPException(422, "; ".join(errors))
+            self._require_disk_space()
             self._require_queue_capacity()
             job.update(status="queued", stage="building", error=None)
             self._save(job)
@@ -233,6 +270,7 @@ class Studio:
             current = next((v for v in job["variants"] if v["id"] == variant), None)
             if current is None or current["revision"] != payload.revision:
                 raise HTTPException(409, "Версия изменилась. Обновите результат")
+            self._require_disk_space()
             self._require_queue_capacity()
             job.update(status="queued", stage="fixing", error=None)
             self._save(job)
@@ -284,7 +322,9 @@ class Studio:
                           "story": story.model_dump(mode="json"), "status": "awaiting_review"}
                 if operation == "generate":
                     pipeline.check()
-                    errors = validate_story(story, payload, source_excerpts(payload.script))
+                    errors = story_reference_issues(story, payload)
+                    if payload.mode != "llm":
+                        errors.extend(validate_story(story, payload, source_excerpts(payload.script)))
                     if errors:
                         raise ValueError("; ".join(errors))
                     # План доступен в истории даже при последующей ошибке сборки.
@@ -335,6 +375,8 @@ class Studio:
                 ) else (
                     "Не удалось выполнить этап. Проверьте настройки модели, конвертеры и материалы."
                 )
+                if isinstance(error, OSError) and error.errno == errno.ENOSPC:
+                    message = "На сервере закончилось место. Повторите после освобождения места."
                 status = "cancelled" if cancel.is_set() else (
                     "completed" if recoverable else "failed"
                 )

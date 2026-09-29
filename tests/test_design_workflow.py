@@ -308,7 +308,7 @@ def test_invalid_story_keeps_review_editable(tmp_path):
     studio.jobs[job_id].update(status="awaiting_review", variants=[])
     story = ContentPlan(title="Ошибка", slides=[StorySlide(
         id="s1", title="Ошибка", paragraphs=["Исходные материалы содержат 999 фактов."],
-        source_ids=["source-1"],
+        source_ids=["unknown-source"],
     )])
     with pytest.raises(HTTPException) as failure:
         studio.build(job_id, story)

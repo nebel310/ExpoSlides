@@ -1,0 +1,7 @@
+.dataset-input { margin-top: 24px; }
+.dataset-upload { width: 100%; min-height: 56px; padding: 14px 20px; text-align: left; border: 1px dashed var(--line); border-radius: 6px; background: var(--paper); }
+.dataset-upload:hover:not(:disabled) { border-color: var(--accent); }
+.dataset-file { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.dataset-file span { overflow-wrap: anywhere; }
+.dataset-file button { min-width: 32px; min-height: 32px; font-size: 20px; }
+.dataset-input .error-message { margin-top: 12px; color: var(--accent); }

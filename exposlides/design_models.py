@@ -53,6 +53,8 @@ class SlidePattern(Contract):
     visual_shape_ids: dict[str, list[int]] = Field(default_factory=dict)
     mutable_shape_ids: list[int] = Field(default_factory=list)
     protected_regions: list[Box] = Field(default_factory=list)
+    replaceable_images: dict[int, Box] = Field(default_factory=dict)
+    layout_images: dict[int, Box] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -77,7 +79,7 @@ class Dataset(Contract):
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
     name: str
     columns: list[str] = Field(min_length=2, max_length=20)
-    rows: list[list[str | float | int]] = Field(min_length=1, max_length=200)
+    rows: list[list[str | float | int]] = Field(min_length=1)
     source: str = Field(min_length=1)
     unit: str = ""
 
@@ -133,6 +135,7 @@ class ContentPlan(Contract):
 
 class ImageGenerationRequest(Contract):
     enabled: bool = False
+    auto: bool = True
     prompt: str = Field(default="", max_length=4000)
     seed: int = Field(default=0, ge=0, le=2147483647)
     width: int = Field(default=1024, ge=256, le=1536)
@@ -175,6 +178,8 @@ class DesignRequest(Contract):
 
 
 class PlacedBlock(Contract):
+    image_fit: Literal["contain", "template"] = "contain"
+    source_layer: Literal["slide", "layout"] = "slide"
     image_path: str | None = None
     source_shape_id: int | None = Field(default=None, ge=1)
     icon: Literal["arrow", "check", "info"] = "arrow"
@@ -192,6 +197,10 @@ class PlacedBlock(Contract):
 
     @model_validator(mode="after")
     def image_reference(self):
+        if self.image_fit == "template" and (self.kind != "image" or self.source_shape_id is None):
+            raise ValueError("Замена фото требует image и исходную фигуру")
+        if self.source_layer != "slide" and self.image_fit != "template":
+            raise ValueError("Источник layout допустим только для замены исходного фото")
         if self.kind == "image" and not self.image_path:
             raise ValueError("Изображение должно ссылаться на локальный файл")
         if self.kind != "image" and self.image_path is not None:

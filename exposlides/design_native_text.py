@@ -59,55 +59,84 @@ def retained_shape_ids(shapes) -> set[int]:
     return result
 
 
-def _list_defaults(style, level):
+def _list_properties(style, level):
     if style is not None:
         for name in (f"a:lvl{level+1}pPr", "a:defPPr"):
             properties = style.find(qn(name))
-            defaults = properties.find(qn("a:defRPr")) if properties is not None else None
-            if defaults is not None:
-                yield defaults
+            if properties is not None:
+                yield properties
 
 
-def _paragraph_defaults(paragraph):
+def _paragraph_level(paragraph):
+    # Paragraph.level создаёт pPr при чтении; layout/master должны оставаться неизменными.
     properties = paragraph._p.find(qn("a:pPr"))
-    if properties is not None:
-        defaults = properties.find(qn("a:defRPr"))
-        if defaults is not None:
-            yield defaults
+    return int(properties.get("lvl", "0")) if properties is not None else 0
 
 
-def _shape_defaults(shape, level):
+def _shape_properties(shape, level):
     if shape.has_text_frame:
         for paragraph in shape.text_frame.paragraphs:
-            if paragraph.level == level:
-                yield from _paragraph_defaults(paragraph)
+            if _paragraph_level(paragraph) == level:
+                properties = paragraph._p.find(qn("a:pPr"))
+                if properties is not None:
+                    yield properties
                 break
-        yield from _list_defaults(shape.text_frame._txBody.find(qn("a:lstStyle")), level)
+        yield from _list_properties(shape.text_frame._txBody.find(qn("a:lstStyle")), level)
 
 
-def _inherited_defaults(shape, paragraph):
-    level = paragraph.level
-    yield from _paragraph_defaults(paragraph)
-    yield from _list_defaults(shape.text_frame._txBody.find(qn("a:lstStyle")), level)
+def _inherited_paragraph_properties(shape, paragraph):
+    level = _paragraph_level(paragraph)
+    properties = paragraph._p.find(qn("a:pPr"))
+    if properties is not None:
+        yield properties
+    yield from _list_properties(shape.text_frame._txBody.find(qn("a:lstStyle")), level)
     slide = shape.part.slide
     master = slide.slide_layout.slide_master
     kind = shape.placeholder_format.type.name if shape.is_placeholder else None
     if shape.is_placeholder:
         layout_shape = slide.slide_layout.placeholders.get(idx=shape.placeholder_format.idx)
         if layout_shape is not None:
-            yield from _shape_defaults(layout_shape, level)
+            yield from _shape_properties(layout_shape, level)
             kind = layout_shape.placeholder_format.type.name
         master_kind = "TITLE" if kind in TITLE_TYPES else "BODY" if kind in BODY_TYPES else kind
         for master_shape in master.placeholders:
             if master_shape.placeholder_format.type.name == master_kind:
-                yield from _shape_defaults(master_shape, level)
+                yield from _shape_properties(master_shape, level)
                 break
     master_styles = master._element.find(qn("p:txStyles"))
     style_name = "p:titleStyle" if kind in TITLE_TYPES else "p:bodyStyle" if kind in BODY_TYPES else "p:otherStyle"
     if master_styles is not None:
-        yield from _list_defaults(master_styles.find(qn(style_name)), level)
+        yield from _list_properties(master_styles.find(qn(style_name)), level)
     presentation = slide.part.package.presentation_part.presentation
-    yield from _list_defaults(presentation._element.find(qn("p:defaultTextStyle")), level)
+    yield from _list_properties(presentation._element.find(qn("p:defaultTextStyle")), level)
+
+
+def _inherited_defaults(shape, paragraph):
+    for properties in _inherited_paragraph_properties(shape, paragraph):
+        defaults = properties.find(qn("a:defRPr"))
+        if defaults is not None:
+            yield defaults
+
+
+def native_plain_text_margin(shape, paragraph) -> int | None:
+    """Убирает остаточный выступ без маркера, сохраняя начало первой строки.
+
+    Настоящие списки, положительный абзацный отступ и нелевое выравнивание
+    остаются как в шаблоне. Чтение наследуемых свойств не меняет layout/master.
+    """
+    attributes, bullet = {}, None
+    bullet_tags = {qn(name) for name in ("a:buNone", "a:buChar", "a:buAutoNum", "a:buBlip")}
+    for properties in _inherited_paragraph_properties(shape, paragraph):
+        for name in ("marL", "indent", "algn"):
+            if name not in attributes and properties.get(name) is not None:
+                attributes[name] = properties.get(name)
+        if bullet is None:
+            bullet = next((child.tag for child in properties if child.tag in bullet_tags), None)
+    indent, margin = int(attributes.get("indent", "0")), int(attributes.get("marL", "0"))
+    if (bullet == qn("a:buNone") and attributes.get("algn", "l") == "l"
+            and indent < 0 and margin + indent >= 0):
+        return margin + indent
+    return None
 
 
 def native_run_size(shape, paragraph, run=None) -> float | None:
@@ -181,7 +210,7 @@ def _scaled_sizes(element, ratio):
 
 
 def fill_native_text(shape, block: PlacedBlock) -> None:
-    """Меняет только содержимое txBody и явно разрешённое уменьшение размера."""
+    """Заполняет txBody, убирает выступ без маркера и при необходимости уменьшает кегль."""
     frame = shape.text_frame
     prototypes = list(frame.paragraphs)
     lines = [line for item in (block.items or [block.text]) for line in item.splitlines()] or [""]
@@ -191,6 +220,11 @@ def fill_native_text(shape, block: PlacedBlock) -> None:
     for index, text in enumerate(lines):
         source = prototypes[min(index, len(prototypes)-1)]
         paragraph = deepcopy(source._p)
+        margin = native_plain_text_margin(shape, source) if block.kind == "text" else None
+        if margin is not None:
+            properties = paragraph.get_or_add_pPr()
+            properties.set("marL", str(margin))
+            properties.set("indent", "0")
         originals = [child for child in source._p if child.tag in RUN_TAGS]
         sizes = [native_run_size(shape, source, run) for run in originals]
         if not originals:

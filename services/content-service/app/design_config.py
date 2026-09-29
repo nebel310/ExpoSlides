@@ -23,7 +23,8 @@ def _configs() -> tuple[dict[str, Any], dict[str, Any]]:
 def role_config(role: str) -> dict[str, Any]:
     workflow, _ = _configs()
     config = dict(workflow["roles"][role])
-    if not 1 <= config["attempts"] <= 3 or not 0 < config["timeout_seconds"] <= 180:
+    maximum_timeout = 240 if role == "story" else 180
+    if not 1 <= config["attempts"] <= 3 or not 0 < config["timeout_seconds"] <= maximum_timeout:
         raise ValueError("Недопустимые ограничения роли дизайнера")
     return config
 
@@ -46,8 +47,10 @@ def model_for_role(role: str, configured_id: str | None = None) -> dict[str, Any
     return model
 
 
-def role_prompt(role: str) -> str:
-    path = (ROOT / role_config(role)["prompt"]).resolve()
+def role_prompt(role: str, name: str | None = None) -> str:
+    config = role_config(role)
+    relative = config["prompt"] if name is None else config["prompts"][name]
+    path = (ROOT / relative).resolve()
     if not path.is_relative_to(ROOT):
         raise ValueError("Промпт должен находиться внутри репозитория")
     return path.read_text(encoding="utf-8")

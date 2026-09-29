@@ -271,3 +271,33 @@ def test_generate_endpoint_preserves_preflight_and_queue_guards(
         assert len(studio.jobs) == count
         assert list((tmp_path / "jobs").iterdir()) == []
         dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize("auto_build", [True, False])
+def test_llm_story_with_factual_errors_reaches_build(
+    tmp_path, pipeline_type, monkeypatch, auto_build,
+):
+    from exposlides.design_models import ContentPlan
+
+    original = pipeline_type.plan
+
+    def unverified(self, template, request):
+        profile, story = original(self, template, request)
+        story.slides[0].paragraphs.append("Выручка выросла на 999 процентов.")
+        return profile, story
+
+    monkeypatch.setattr(pipeline_type, "plan", unverified)
+    studio, payload = prepared(tmp_path, pipeline_type)
+    payload.request.mode = "llm"
+    monkeypatch.setattr(studio, "capabilities", lambda **kwargs: {"story": True})
+    try:
+        identifier = studio.start(payload, auto_build=auto_build)["id"]
+        job = finish(studio, identifier)
+        if not auto_build:
+            assert job["status"] == "awaiting_review"
+            studio.build(identifier, ContentPlan.model_validate(job["story"]))
+            job = finish(studio, identifier)
+        assert job["status"] == "completed"
+        assert any("build" in pipeline.calls for pipeline in pipeline_type.instances)
+    finally:
+        studio.close()

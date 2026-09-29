@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -226,7 +227,22 @@ def offline_pipeline(tmp_path, monkeypatch):
 
 
 def test_offline_pipeline_actual_parse_llm_boundary_native_build_and_exports(native_case, offline_pipeline):
+    from copy import deepcopy
+
     template, _, _ = native_case
+    # Три реальные композиции вместо трёх одинаковых копий единственного образца.
+    source = Presentation(template)
+    original_shapes = list(source.slides[0].shapes)
+    for offset in (1, 2):
+        slide = source.slides.add_slide(source.slide_layouts[6])
+        for shape in original_shapes:
+            slide.shapes._spTree.insert_element_before(deepcopy(shape._element), "p:extLst")
+        body = next(shape for shape in slide.shapes
+                    if shape.has_text_frame and shape.text == "Содержание шаблона")
+        body.left += Inches(offset)
+        body.width -= Inches(offset)
+    source.save(template)
+    assert len(Presentation(template).slides) == 3
     request = DesignRequest(script="Команда развивает платформу. Поддержка помогает клиентам.",
                             slide_count=1, mode="llm")
     story = ContentPlan(title="Платформа", slides=[StorySlide(
@@ -260,17 +276,28 @@ def test_offline_pipeline_actual_parse_llm_boundary_native_build_and_exports(nat
     assert manifest["story_model"]["endpoint_model"] == "Qwen/Qwen3.8-27B:deepinfra"
     assert "api_key" not in manifest["story_model"]
     assert manifest["limits"]["seconds"] == offline_pipeline.timeout
+    for name in ("story_correction.md", "story_correction_patch.md", "story_correction_full.md",
+                 "story_repair_requirements.md", "story_editorial_repair.md"):
+        relative = f"prompts/designer/{name}"
+        resource = Path(__file__).resolve().parents[1] / relative
+        assert manifest["versioned_resources"][relative] == hashlib.sha256(resource.read_bytes()).hexdigest()
     variants = offline_pipeline.build(template, request, profile, generated)
-    assert calls == ["app.main", "app.design_main"]
+    assert calls == ["app.main", "app.design_main", "app.main"]
     assert len(variants) == 3
+    saved_compositions = set()
     for variant in variants:
         revision = offline_pipeline.directory / "variants" / variant["id"] / "1"
         prs = Presentation(revision / "presentation.pptx")
         assert len(prs.slides) == 1
+        saved_compositions.add(tuple(
+            (shape.left, shape.top, shape.width, shape.height, shape.text)
+            for shape in prs.slides[0].shapes if shape.has_text_frame
+        ))
         assert any(request.script in shape.text for shape in prs.slides[0].shapes if shape.has_text_frame)
         assert not [issue for issue in variant["issues"] if issue["severity"] == "error"]
         assert (revision / "presentation.pdf").is_file()
         assert "data:image/png;base64," in (revision / "presentation.html").read_text()
+    assert len(saved_compositions) == 3
     assert not list(offline_pipeline.directory.rglob(".pending-*"))
 
 
@@ -370,3 +397,56 @@ def test_cancelled_fix_preserves_available_versions_after_restart(tmp_path):
         assert restored.get(identifier)["status"] == "completed"
     finally:
         restored.close()
+
+
+def test_unverified_story_builds_reopens_and_keeps_audit(native_case, offline_pipeline):
+    template, profile, _ = native_case
+    request = DesignRequest(script="Команда развивает платформу.", slide_count=1, mode="llm")
+    profile, _ = offline_pipeline.plan(
+        template, request.model_copy(update={"mode": "extractive"}),
+    )
+    story = ContentPlan(title="Обзор", slides=[StorySlide(
+        id="s1", title="Обзор", paragraphs=["Команда развивает платформу. Рост 99%."],
+        source_ids=["source-1"],
+    )])
+    variants = offline_pipeline.build(template, request, profile, story)
+    assert variants
+    for variant in variants:
+        directory = offline_pipeline.directory / "variants" / variant["id"] / "1"
+        saved = Presentation(directory / "presentation.pptx")
+        assert len(saved.slides) == 1
+        assert any("99%" in shape.text for shape in saved.slides[0].shapes if shape.has_text_frame)
+        assert any(issue["rule"] == "story_validation" and "99%" in issue["message"]
+                   for issue in variant["issues"])
+        assert not json.loads((directory / "audit.json").read_text())["issues"] == []
+    story.slides[0].paragraphs = [request.script]
+    offline_pipeline.validate_plan(request, profile, story)
+    findings = json.loads((offline_pipeline.directory / "story-validation.json").read_text())
+    assert not any("99%" in issue for issue in findings["issues"])
+
+
+def test_unverified_story_cannot_bypass_broken_references(native_case, offline_pipeline):
+    _, profile, _ = native_case
+    request = DesignRequest(script="Команда развивает платформу.", slide_count=1, mode="llm")
+    story = ContentPlan(title="Обзор", slides=[StorySlide(
+        id="s1", title="Обзор", paragraphs=[request.script], source_ids=["unknown"],
+    )])
+    with pytest.raises(ValueError, match="неизвестные ссылки"):
+        offline_pipeline.validate_plan(request, profile, story)
+
+
+def test_saved_audit_accepts_empty_relationship_in_powerpoint_action(tmp_path, native_case):
+    from pptx.oxml.ns import qn
+    from pptx.oxml.xmlchemy import OxmlElement
+
+    template, profile, plan = native_case
+    source = Presentation(template)
+    shape = source.slides[0].shapes[2]
+    action = OxmlElement("a:hlinkClick")
+    action.set(qn("r:id"), "")
+    action.set("action", "ppaction://hlinkshowjump?jump=nextslide")
+    shape._element.find(".//" + qn("p:cNvPr")).append(action)
+    source.save(template)
+    output = build_deck(template, plan, tmp_path / "actions.pptx")
+    assert len(Presentation(output).slides) == 1
+    assert audit_saved_pptx(output, template, plan, profile).ok

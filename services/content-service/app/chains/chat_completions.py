@@ -1,5 +1,6 @@
 """HTTP-транспорт Chat Completions API без скрытых повторных запросов."""
 
+import json
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -81,6 +82,63 @@ def _parse_response(response: httpx.Response) -> ChatCompletion:
     return completion
 
 
+async def _parse_stream(response: httpx.Response) -> ChatCompletion:
+    """Собрать только завершённый ответ; обрыв потока не становится валидным JSON."""
+    response.raise_for_status()
+    if "application/json" in response.headers.get("content-type", ""):
+        await response.aread()
+        return _parse_response(response)
+    pieces: list[str] = []
+    finished = False
+    received = 0
+    async for line in response.aiter_lines():
+        received += len(line)
+        if received > 4 * 1024 * 1024:
+            raise ChatCompletionsResponseError("LLM stream exceeds response limit")
+        if not line.startswith("data:"):
+            continue
+        raw = line[5:].strip()
+        if raw == "[DONE]":
+            if not finished or not pieces:
+                raise ChatCompletionsResponseError("LLM stream ended without a complete message")
+            return ChatCompletion(choices=[ChatChoice(
+                message=ChatMessage(content="".join(pieces)), finish_reason="stop",
+            )])
+        try:
+            data = json.loads(raw)
+        except ValueError as error:
+            raise ChatCompletionsResponseError("LLM stream contains malformed JSON") from error
+        if not isinstance(data, dict):
+            raise ChatCompletionsResponseError("LLM stream contains an invalid event")
+        if data.get("error") is not None:
+            _raise_embedded_error(data["error"], response)
+        choices = data.get("choices", [])
+        if not isinstance(choices, list):
+            raise ChatCompletionsResponseError("LLM stream contains invalid choices")
+        for choice in choices:
+            if not isinstance(choice, dict):
+                raise ChatCompletionsResponseError("LLM stream contains an invalid choice")
+            if choice.get("error") is not None:
+                _raise_embedded_error(choice["error"], response)
+            if choice.get("index", 0) != 0:
+                continue
+            delta = choice.get("delta", {})
+            if not isinstance(delta, dict):
+                raise ChatCompletionsResponseError("LLM stream contains an invalid delta")
+            content = delta.get("content")
+            if content is not None:
+                if not isinstance(content, str) or (finished and content):
+                    raise ChatCompletionsResponseError("LLM stream contains invalid content")
+                if content:
+                    pieces.append(content)
+            reason = choice.get("finish_reason")
+            if reason is not None:
+                if reason != "stop":
+                    raise ChatCompletionsResponseError("LLM stream generation did not complete")
+                finished = True
+    raise ChatCompletionsResponseError("LLM stream disconnected before completion")
+
+
 class ChatCompletionsClient:
     """Синхронные и асинхронные запросы к совместимому Chat Completions API."""
 
@@ -111,6 +169,9 @@ class ChatCompletionsClient:
                 timeout=self._timeout,
                 verify=True,
             )
+        if payload.get("stream"):
+            async with self._async_client.stream("POST", "chat/completions", json=payload) as response:
+                return await _parse_stream(response)
         response = await self._async_client.post("chat/completions", json=payload)
         return _parse_response(response)
 

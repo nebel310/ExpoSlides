@@ -17,17 +17,26 @@ from uuid import uuid4
 
 from exposlides.cli import CONTENT_ERROR_CODES
 from exposlides.design_audit import apply_fixes, audit_deck, audit_saved_pptx
-from exposlides.design_content import extractive_plan, source_excerpts, validate_story
+from exposlides.design_content import (
+    extractive_plan,
+    source_excerpts,
+    story_reference_issues,
+    validate_story,
+)
+from exposlides.design_diversity import variant_diversity
 from exposlides.design_export import export_deck
-from exposlides.design_layout import create_variants
+from exposlides.design_layout import create_variants, story_layout_issues
 from exposlides.design_models import (
+    AuditIssue,
     AuditReport,
     ContentPlan,
     DeckPlan,
     DesignRequest,
     TemplateProfile,
 )
+from exposlides.design_repetition import image_identity, repeated_content_images
 from exposlides.preview import PreviewRenderer
+from exposlides.template_catalog import prepare_template_catalog, resolve_template_catalog
 from exposlides.template_profile import profile_from_json
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,6 +134,7 @@ class DesignPipeline:
         self.directory.mkdir(parents=True, exist_ok=True)
         save_model(self.directory / "request.json", request)
         self.progress("template")
+        template = prepare_template_catalog(template, self.directory)
         parsed = self.directory / "template.json"
         self.command([
             sys.executable, "-m", "app.main", "--input-pptx", str(template.resolve()),
@@ -143,9 +153,7 @@ class DesignPipeline:
                 "--profile", str((self.directory / "profile.json").resolve()),
             ], ROOT / "services/content-service", content_stage=True)
             story = ContentPlan.model_validate_json((self.directory / "story.json").read_text(encoding="utf-8"))
-        errors = validate_story(story, request, source_excerpts(request.script))
-        if errors:
-            raise ValueError("; ".join(errors))
+        self.validate_plan(request, profile, story)
         save_model(self.directory / "story.json", story)
         versioned_files = [
             *sorted((ROOT / "prompts").rglob("*.md")),
@@ -185,16 +193,53 @@ class DesignPipeline:
         })
         return profile, story
 
+    def validate_plan(self, request: DesignRequest, profile: TemplateProfile,
+                      story: ContentPlan) -> None:
+        blocking = story_reference_issues(story, request)
+        errors = validate_story(story, request, source_excerpts(request.script))
+        errors.extend(story_layout_issues(profile, story, request.datasets))
+        if blocking or (errors and request.mode != "llm"):
+            raise ValueError("; ".join(blocking or errors))
+        # Пересчитываем и при ручной правке: старые замечания не переживают исправление.
+        save_model(self.directory / "story-validation.json", {"issues": errors})
+
     def build(self, template: Path, request: DesignRequest, profile: TemplateProfile,
               story: ContentPlan) -> list[dict]:
-        errors = validate_story(story, request, source_excerpts(request.script))
-        if errors:
-            raise ValueError("; ".join(errors))
+        # Сохранённый профиль мог быть создан старой версией анализатора.
+        # Пересчитываем слоты до валидации и выбора макетов, а не пропускаем
+        # отсутствующие текстовые фигуры при сборке (это потеряло бы контент).
+        parsed = self.directory / "template.json"
+        if parsed.is_file():
+            source = resolve_template_catalog(template, self.directory, profile.template_sha256)
+            if hashlib.sha256(source.read_bytes()).hexdigest() != profile.template_sha256:
+                raise ValueError("Шаблон не соответствует сохранённому профилю")
+            # Старый parser помечал картинки-placeholder как обычные фигуры.
+            # Повторный разбор восстанавливает и текстовые, и фотообласти.
+            self.command([
+                sys.executable, "-m", "app.main", "--input-pptx", str(source.resolve()),
+                "--output-json", str(parsed.resolve()),
+            ], ROOT / "services/parsing-service")
+            profile = profile_from_json(json.loads(parsed.read_text(encoding="utf-8")), source)
+            save_model(self.directory / "profile.json", profile)
+        self.validate_plan(request, profile, story)
         save_model(self.directory / "story.json", story)
-        generated_image = self.generate_image(request, profile, story)
+        diversity = variant_diversity(profile, create_variants(profile, story, request.datasets))
+        save_model(self.directory / "variant-diversity.json", diversity)
+        if not diversity["sufficient"]:
+            message = "В шаблоне недостаточно композиций: варианты могут быть похожи."
+            if request.mode != "llm":
+                raise ValueError(
+                    "В шаблоне недостаточно подходящих композиций для трёх различимых версий. "
+                    "Добавьте разные макеты или сократите текст; одинаковые варианты не опубликованы."
+                )
+            validation = self.directory / "story-validation.json"
+            findings = json.loads(validation.read_text(encoding="utf-8"))
+            findings["issues"].append(message)
+            save_model(validation, findings)
+        generated_images = self.generate_images(request, profile, story)
         variants = create_variants(
-            profile, story, request.datasets, generated_image=generated_image,
-            image_slide_id=request.generated_image.slide_id,
+            profile, story, request.datasets, generated_images=generated_images,
+            template_images_only=not request.generated_image.enabled,
         )
         results = []
         for plan in variants:
@@ -203,9 +248,99 @@ class DesignPipeline:
             save_model(self.directory / "variants.json", results)
         return results
 
+    def generate_images(self, request: DesignRequest, profile: TemplateProfile,
+                        story: ContentPlan) -> dict[str, Path | list[Path]]:
+        specification = request.generated_image
+        if specification.enabled:
+            image = self.generate_image(request, profile, story)
+            return {specification.slide_id or story.slides[0].id: image} if image else {}
+        if not specification.auto or os.environ.get("IMAGE_GENERATION_ENABLED", "false").lower() != "true":
+            return {}
+        # Сначала композиции шаблона; изображение не диктует выбор макета.
+        variants = create_variants(profile, story, request.datasets)
+        patterns = {pattern.source_slide_index: pattern for pattern in profile.patterns}
+        image_counts = {}
+        for plan in variants:
+            for slide in plan.slides:
+                pattern = patterns[slide.source_slide_index]
+                count = len(pattern.replaceable_images) + len(pattern.layout_images)
+                if count and all(block.source_shape_id is not None for block in slide.blocks):
+                    image_counts[slide.story_slide_id] = max(
+                        image_counts.get(slide.story_slide_id, 0), count,
+                    )
+        candidates = story.slides[1:] if len(story.slides) > 1 else story.slides
+        targets = [slide for slide in candidates if slide.id in image_counts and not slide.visual]
+        if not targets:
+            return {}
+        images, bindings = [], {}
+        for slide in targets:
+            for slot in range(image_counts[slide.id]):
+                key = slide.id if slot == 0 else "image-" + hashlib.sha256(
+                    f"{slide.id}:{slot}".encode("utf-8"),
+                ).hexdigest()[:32]
+                if key in bindings or (slot and key in {s.id for s in story.slides}):
+                    raise ValueError("Конфликт идентификаторов иллюстраций")
+                payload = specification.model_dump(mode="json", exclude={"slide_id", "auto"})
+                prompt = "\n".join([slide.title, *slide.paragraphs])[:3000]
+                if image_counts[slide.id] > 1:
+                    prompt += (f"\nИллюстрация {slot + 1} из {image_counts[slide.id]}: "
+                               + (slide.paragraphs[slot % len(slide.paragraphs)])[:400]
+                               + " Покажи отдельный аспект темы, с другой сценой и композицией.")
+                payload.update(
+                    enabled=True, prompt=prompt, source_ids=slide.source_ids,
+                    seed=(specification.seed + len(images)) % (2**32),
+                    palette=specification.palette or profile.patterns[0].palette[:8],
+                )
+                images.append({"slide_id": key, "request": payload})
+                bindings[key] = slide
+        if len(images) > 50:
+            raise ValueError("В презентации больше 50 фотообластей: сократите число слайдов")
+        budget = min(90, self.deadline - time.monotonic() - 30)
+        if budget <= 0:
+            raise TimeoutError("Недостаточно времени для иллюстраций и сборки")
+        input_path, output_path = self.directory / "images-request.json", self.directory / "images-result.json"
+        save_model(input_path, {"images": images})
+        self.progress("illustration")
+        self.command([
+            sys.executable, "-m", "app.design_images", "--request", str(input_path.resolve()),
+            "--output", str(output_path.resolve()), "--timeout", str(budget),
+        ], ROOT / "services/content-service", allow_failure=True)
+        if not output_path.is_file():
+            raise RuntimeError("Генератор не вернул набор иллюстраций")
+        result = json.loads(output_path.read_text(encoding="utf-8"))
+        entries = result.get("images", {})
+        if result.get("status") != "completed" or set(entries) != set(bindings):
+            raise RuntimeError("Не удалось создать разные иллюстрации для всех слайдов")
+        paths = {slide.id: [] for slide in targets}
+        digests = set()
+        for key, slide in bindings.items():
+            item = entries[key]
+            path = Path(item["path"]).resolve()
+            if (item.get("status") != "completed" or not path.is_relative_to(self.directory.resolve())
+                    or not path.is_file()):
+                raise ValueError("Некорректный путь иллюстрации")
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            identity = image_identity(path.read_bytes())
+            if digest != item.get("sha256") or identity in digests:
+                raise ValueError("Иллюстрации повреждены или повторяются")
+            if item.get("source_ids") != slide.source_ids:
+                raise ValueError("Иллюстрация привязана к другим материалам")
+            paths[slide.id].append(path)
+            digests.add(identity)
+        return {key: values[0] if len(values) == 1 else values for key, values in paths.items()}
+
     def generate_image(self, request: DesignRequest, profile: TemplateProfile,
                        story: ContentPlan) -> Path | None:
         specification = request.generated_image
+        if (not specification.enabled and specification.auto
+                and os.environ.get("IMAGE_GENERATION_ENABLED", "false").lower() == "true"):
+            target = next((slide for slide in story.slides[1:] if not slide.visual), story.slides[0])
+            specification = specification.model_copy(update={
+                "enabled": True, "slide_id": target.id,
+                "prompt": "\n".join([target.title, *target.paragraphs])[:3500],
+                "source_ids": target.source_ids,
+            })
+        self.image_slide_id = specification.slide_id
         if not specification.enabled:
             return None
         if specification.slide_id and specification.slide_id not in {s.id for s in story.slides}:
@@ -213,7 +348,7 @@ class DesignPipeline:
         known = {e.id for e in source_excerpts(request.script)}
         if set(specification.source_ids)-known:
             raise ValueError("Иллюстрация ссылается на неизвестные материалы")
-        payload = specification.model_dump(mode="json", exclude={"slide_id"})
+        payload = specification.model_dump(mode="json", exclude={"slide_id", "auto"})
         if not payload["palette"]:
             payload["palette"] = profile.patterns[0].palette[:8]
         input_path = self.directory / "image-request.json"
@@ -241,6 +376,7 @@ class DesignPipeline:
         from exposlides.design_builder import build_deck
 
         self.check()
+        template = resolve_template_catalog(template, self.directory, profile.template_sha256)
         self.progress(f"building:{plan.variant_id}")
         final = self.directory / "variants" / plan.variant_id / str(revision)
         if final.exists():
@@ -250,6 +386,11 @@ class DesignPipeline:
         try:
             output = staging / "presentation.pptx"
             build_deck(template, plan, output)
+            if repeated_content_images(output, plan, profile):
+                raise ValueError(
+                    "В презентации повторяются содержательные иллюстрации. "
+                    "Нужны разные изображения для фотообластей; результат не опубликован."
+                )
             self.check()
             self.progress(f"rendering:{plan.variant_id}")
             self.renderer.timeout = max(1, min(90, self.deadline-time.monotonic()))
@@ -257,6 +398,13 @@ class DesignPipeline:
             self.check()
             self.progress(f"auditing:{plan.variant_id}")
             audit = audit_deck(plan, profile)
+            validation_file = self.directory / "story-validation.json"
+            if validation_file.is_file():
+                findings = json.loads(validation_file.read_text(encoding="utf-8"))["issues"]
+                audit.issues.extend(AuditIssue(
+                    id=f"story-validation-{index}", rule="story_validation", severity="error",
+                    slide_id="", message=message,
+                ) for index, message in enumerate(findings, 1))
             saved_audit = audit_saved_pptx(output, template, plan, profile)
             audit.issues.extend(saved_audit.issues)
             audit.checks.extend(saved_audit.checks)

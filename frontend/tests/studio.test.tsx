@@ -70,7 +70,7 @@ test("CSV rejects malformed data before upload", () => {
   assert.throws(() => parseDataset("a,a\n1,2", "a.csv", "a"), /различаться/);
   assert.throws(() => parseDataset("a,b\n1,2,3", "a.csv", "a"), /одинаковым/);
   assert.throws(() => parseDataset('a,b\n"open,2', "a.csv", "a"), /не закрыта/);
-  assert.throws(() => parseDataset("a,b\n" + "1,2\n".repeat(201), "a.csv", "a"), /200/);
+  assert.equal(parseDataset("a,b\n" + "1,2\n".repeat(1001), "a.csv", "a").rows.length, 1001);
 });
 
 test("cancellation keeps polling until acknowledged", () => {
@@ -254,7 +254,7 @@ test("first render provides only upload, result and history with material action
   assert.match(html, /type="file" accept="\.txt"/);
   assert.match(html, /<textarea[^>]*id="script"[^>]*disabled=""/);
   assert.match(html, /type="submit" disabled=""[^>]*>Создать презентацию<span class="action-arrow" aria-hidden="true">↗<\/span><\/button>/);
-  assert.doesNotMatch(html, /JSON|CSV|HTML|Аудит|Профиль шаблона|Создать план|С моделью|Дополнительные настройки|Открыть пример|Проверочный/);
+  assert.doesNotMatch(html, /JSON|HTML|Задача презентации|Аудитория|Профиль шаблона|Создать план|С моделью|Дополнительные настройки|Открыть пример|Проверочный/);
 });
 
 test("recent jobs show precise status and accessible choices without claiming missing variants", () => {
@@ -282,7 +282,9 @@ test("simple results provide slide navigation and only PowerPoint and PDF downlo
   };
   const html = renderToStaticMarkup(<ResultViewer job={job} />);
   assert.match(html, /Вариант/);
-  for (const name of ["Сбалансированный", "С данными", "Карточки"]) assert.ok(html.includes(name));
+  for (const name of ["Вариант 1", "Вариант 2", "Вариант 3"]) assert.ok(html.includes(name));
+  assert.doesNotMatch(html, /<select|Сбалансированный|С данными|Карточки/);
+  assert.match(html, /aria-label="Вариант 1" aria-pressed="true"/);
   assert.match(html, /alt="Слайд 1: Проблема"/);
   assert.match(html, /src="\/files\/1\/slide-1.png"/);
   assert.match(html, /aria-label="Открыть слайд 1"[^>]*aria-current="true"/);
@@ -291,7 +293,8 @@ test("simple results provide slide navigation and only PowerPoint and PDF downlo
   assert.match(html, /aria-label="Следующий слайд"/);
   assert.match(html, /href="\/files\/1\/presentation.pptx"[^>]*>Скачать PPTX<\/a>/);
   assert.match(html, /href="\/files\/1\/presentation.pdf"[^>]*>PDF<\/a>/);
-  assert.doesNotMatch(html, /presentation\.html|>HTML<|Исправить|type="checkbox"/);
+  assert.match(html, /href="\/files\/1\/presentation.html"[^>]*download=""[^>]*>HTML<\/a>/);
+  assert.doesNotMatch(html, /Исправить|type="checkbox"/);
 });
 
 test("simple results do not expose audit, template internals, prompts or generation settings", () => {
@@ -306,7 +309,7 @@ test("simple results do not expose audit, template internals, prompts or generat
   };
   const html = renderToStaticMarkup(<ResultViewer job={job} />);
   for (const text of hidden) assert.ok(!html.includes(text), `Result leaked ${text}`);
-  assert.doesNotMatch(html, /<textarea|<pre|<details|JSON|HTML|Профиль шаблона|Аудит|Проверка изображений|native_geometry|source_shape_id|slide_count|contextual_audit|type="checkbox"/);
+  assert.doesNotMatch(html, /<textarea|<pre|<details|JSON|Профиль шаблона|Аудит|Проверка изображений|native_geometry|source_shape_id|slide_count|contextual_audit|type="checkbox"/);
   assert.match(html, /Скачать PPTX/);
 });
 
@@ -315,7 +318,8 @@ test("a result without rendered images keeps its available download and explains
   assert.match(html, /Предпросмотр недоступен/);
   assert.match(html, /Презентацию можно скачать и открыть на компьютере/);
   assert.match(html, /href="\/partial.pptx"/);
-  assert.doesNotMatch(html, /<img|href="\/partial.html"|>PDF<|Слайд 0|undefined|NaN/);
+  assert.match(html, /href="\/partial.html"[^>]*>HTML<\/a>/);
+  assert.doesNotMatch(html, /<img|>PDF<|Слайд 0|undefined|NaN/);
 });
 
 test("an unfinished result does not invent exports or slide previews", () => {
@@ -337,7 +341,8 @@ test("retrying a legacy job sends only visible materials and clears hidden gener
   assert.equal(restored.script, "Старый текст");
   assert.equal(restored.slide_count, 7);
   assert.equal(restored.required_messages.length, 0);
-  assert.equal(restored.datasets.length, 0);
+  assert.deepEqual(restored.datasets, legacy.datasets);
+  assert.notEqual(restored.datasets[0].rows, legacy.datasets[0].rows);
   assert.equal(restored.generated_image, undefined);
   assert.equal(restored.contextual_audit, false);
   assert.equal(restored.mode, "llm");
@@ -351,7 +356,8 @@ test("retrying a legacy job sends only visible materials and clears hidden gener
     const payload = JSON.parse(String(init?.body));
     assert.equal(payload.request.script, "Новые факты");
     assert.equal(payload.request.slide_count, 7);
-    assert.doesNotMatch(JSON.stringify(payload), /old-data|old-source|old.csv|Устаревший|Старая иллюстрация|generated_image/);
+    assert.deepEqual(payload.request.datasets, legacy.datasets);
+    assert.doesNotMatch(JSON.stringify(payload), /old-source|Устаревший|Старая иллюстрация|generated_image/);
     assert.equal(payload.request.contextual_audit, false);
     return Response.json({ id: "new-job", status: "queued" });
   });
@@ -368,4 +374,145 @@ test("history slide counts use Russian plural forms including the eleven-to-four
   for (const [count, label] of [[0, "0 слайдов"], [1, "1 слайд"], [2, "2 слайда"], [3, "3 слайда"], [4, "4 слайда"], [5, "5 слайдов"], [11, "11 слайдов"], [12, "12 слайдов"], [14, "14 слайдов"], [20, "20 слайдов"], [21, "21 слайд"], [22, "22 слайда"], [25, "25 слайдов"], [101, "101 слайд"], [111, "111 слайдов"], [114, "114 слайдов"]] as const) {
     assert.equal(slideCountLabel(count), label);
   }
+});
+
+class FakeUpload {
+  timeout = 0;
+  status = 201;
+  responseText = '{"id":"uploaded"}';
+  upload = { onprogress: null as null | ((event: { lengthComputable: boolean; loaded: number; total: number }) => void) };
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  ontimeout: (() => void) | null = null;
+  onabort: (() => void) | null = null;
+  headers: Record<string, string> = {};
+  body = "";
+  sent = 0;
+  open(method: string, path: string) { assert.equal(method, "POST"); assert.equal(path, "/api/templates"); }
+  setRequestHeader(key: string, value: string) { this.headers[key] = value; }
+  send(body: string) { this.body = body; this.sent++; }
+}
+
+function uploadApi(xhr: FakeUpload) {
+  let requests = 0;
+  const client = new StudioApi((async (path, options) => {
+    requests++;
+    assert.equal(path, "/api/session");
+    assert.equal(options?.cache, "no-store");
+    return Response.json({ token: "fresh-token" });
+  }) as typeof fetch, () => xhr as unknown as XMLHttpRequest);
+  return { client, requests: () => requests };
+}
+const flushUpload = () => new Promise<void>(resolve => setImmediate(resolve));
+
+test("PPTX upload uses a separate deadline, fresh session and transfer progress", async () => {
+  const xhr = new FakeUpload();
+  const { client, requests } = uploadApi(xhr);
+  const progress: number[] = [];
+  const payload = { name: "Шаблон.pptx", data: "encoded" };
+  const pending = client.uploadTemplate(payload, value => progress.push(value));
+  await flushUpload();
+  assert.equal(xhr.timeout, 300000);
+  assert.equal(xhr.headers["X-Session-Token"], "fresh-token");
+  assert.deepEqual(JSON.parse(xhr.body), payload);
+  xhr.upload.onprogress!({ lengthComputable: true, loaded: 50, total: 100 });
+  xhr.upload.onprogress!({ lengthComputable: false, loaded: 80, total: 0 });
+  xhr.upload.onprogress!({ lengthComputable: true, loaded: 100, total: 100 });
+  xhr.onload!();
+  assert.deepEqual(await pending, { id: "uploaded" });
+  assert.deepEqual(progress, [50, 100]);
+  assert.equal(requests(), 1); assert.equal(xhr.sent, 1);
+});
+for (const event of ["onerror", "ontimeout", "onabort"] as const) {
+  test(`PPTX ${event} rejects without retrying`, async () => {
+    const xhr = new FakeUpload();
+    const { client, requests } = uploadApi(xhr);
+    const pending = client.uploadTemplate({ name: "a.pptx", data: "encoded" }, () => {});
+    const rejected = assert.rejects(pending, (error: unknown) => error instanceof ApiError && error.status === 0);
+    await flushUpload(); xhr[event]!(); await rejected;
+    assert.equal(xhr.sent, 1); assert.equal(requests(), 1);
+  });
+}
+for (const [status, response, message] of [
+  [403, '{"detail":"Сессия устарела"}', /Сессия устарела/],
+  [413, '{"detail":"Файл слишком большой"}', /слишком большой/],
+  [502, '<html>bad gateway</html>', /неожиданный ответ/],
+] as const) {
+  test(`PPTX server error ${status} remains visible`, async () => {
+    const xhr = new FakeUpload(); xhr.status = status; xhr.responseText = response;
+    const { client } = uploadApi(xhr);
+    const pending = client.uploadTemplate({ name: "a.pptx", data: "encoded" }, () => {});
+    const rejected = assert.rejects(pending, message);
+    await flushUpload(); xhr.onload!(); await rejected;
+    assert.equal(xhr.sent, 1);
+  });
+}
+test("missing session prevents PPTX transmission", async () => {
+  let created = false;
+  const client = new StudioApi((async () => Response.json({})) as typeof fetch, () => {
+    created = true; throw new Error("must not create upload");
+  });
+  await assert.rejects(client.uploadTemplate({ name: "a.pptx", data: "encoded" }, () => {}), /сессию/);
+  assert.equal(created, false);
+});
+
+
+test("variant cards compare the current slide and switch downloads without resetting it", async () => {
+  const { JSDOM } = await import("jsdom");
+  const { act } = await import("react");
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost" });
+  const original = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document,
+    navigator: dom.window.navigator, IS_REACT_ACT_ENVIRONMENT: true })) {
+    original.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  }
+  const { createRoot } = await import("react-dom/client");
+  const root = createRoot(dom.window.document.getElementById("root")!);
+  const document = dom.window.document;
+  const job: Job = { id: "compare", status: "completed", story, variants: [
+    { ...variant, id: "story", preview_urls: ["/a1.png", "/a2.png"] },
+    { ...variant, id: "cards", preview_urls: ["/b1.png", "/b2.png"], exports: { pptx: "/b.pptx", pdf: "/b.pdf", html: "/b.html" } },
+    { ...variant, id: "evidence", preview_urls: [], exports: { pptx: "/c.pptx" } },
+  ] };
+  const click = async (label: string) => {
+    const button = document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+    assert.ok(button);
+    await act(async () => { button.click(); });
+  };
+  try {
+    await act(async () => { root.render(<ResultViewer job={job} />); });
+    await click("Открыть слайд 2");
+    assert.deepEqual([...document.querySelectorAll(".viewer-variant img")].map(img => img.getAttribute("src")), ["/a2.png", "/b2.png"]);
+    await click("Вариант 2");
+    assert.equal(document.querySelector(".viewer-image")?.getAttribute("src"), "/b2.png");
+    assert.equal(document.querySelector('.viewer-variant[aria-pressed="true"]')?.getAttribute("aria-label"), "Вариант 2");
+    assert.deepEqual([...document.querySelectorAll(".viewer-downloads a")].map(a => a.getAttribute("href")), ["/b.pptx", "/b.pdf", "/b.html"]);
+    await act(async () => { document.querySelector('.viewer-variant img')!.dispatchEvent(new dom.window.Event("error")); });
+    assert.ok(document.querySelector(".viewer-variant-unavailable"));
+    await click("Вариант 3");
+    assert.equal(document.querySelector(".viewer-image"), null);
+    assert.deepEqual([...document.querySelectorAll(".viewer-downloads a")].map(a => a.getAttribute("href")), ["/c.pptx"]);
+    assert.equal(document.querySelector(".viewer-variant img")?.getAttribute("src"), "/b2.png");
+    await click("Вариант 1");
+    assert.equal(document.querySelector(".viewer-image")?.getAttribute("src"), "/a2.png");
+    await act(async () => { root.render(<ResultViewer job={{ ...job, id: "another" }} />); });
+    assert.equal(document.querySelector(".viewer-image")?.getAttribute("src"), "/a1.png");
+  } finally {
+    await act(async () => { root.unmount(); });
+    dom.window.close();
+    for (const [key, descriptor] of original) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  }
+});
+
+
+test("unverified presentation remains downloadable with a visible warning", () => {
+  const result = { ...variant, issues: [{ ...issue, rule: "story_validation", fix: "none" as const }] };
+  const html = renderToStaticMarkup(<ResultViewer job={{ id: "fallback", status: "ready", variants: [result] } as Job} />);
+  assert.match(html, /role="alert"/);
+  assert.match(html, /Презентация готова с замечаниями/);
+  assert.match(html, /Скачать PPTX/);
 });

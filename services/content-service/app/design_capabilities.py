@@ -8,6 +8,8 @@ from urllib.parse import urlsplit
 
 from app.design_config import model_for_role
 
+HF_IMAGE_ENDPOINT = "https://router.huggingface.co/fal-ai/fal-ai/z-image/turbo"
+
 
 def capabilities(config: Any = None) -> dict[str, bool]:
     flags = {"generated_image": False, "contextual_audit": False, "story": False}
@@ -33,7 +35,12 @@ def capabilities(config: Any = None) -> dict[str, bool]:
                 flags[flag] = True
         image_url = urlsplit(config.image_api_url)
         local = image_url.hostname in {"localhost", "127.0.0.1", "::1"}
-        if config.image_api_key.strip() and image_url.hostname and (
+        image_key = config.image_api_key.strip()
+        if config.image_api_url == HF_IMAGE_ENDPOINT:
+            image_key = image_key or config.llm_api_key.strip()
+            if not image_key.startswith("hf_") or not llm_ready:
+                image_key = ""
+        if image_key and image_url.hostname and (
             image_url.scheme == "https" or (local and image_url.scheme == "http")
         ) and not image_url.username and not image_url.password:
             try:

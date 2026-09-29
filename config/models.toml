@@ -1,6 +1,6 @@
 schema_version = "1.0"
-registry_version = "1.0.0"
-verified_at = "2026-09-27"
+registry_version = "1.1.0"
+verified_at = "2026-09-28"
 allowed_licenses = ["Apache-2.0", "MIT"]
 max_language_parameters_billions = 35
 max_image_parameters_billions = 20
@@ -27,3 +27,12 @@ live_endpoint_verified = false
 top10_inference_provider = "VK"
 top10_language_model = "Qwen/Qwen3.8-27B"
 vk_endpoint_verified = false
+
+[models.z_image_turbo]
+id = "Tongyi-MAI/Z-Image-Turbo"
+parameters_billions = 6
+license = "Apache-2.0"
+tasks = ["text-to-image"]
+source = "https://huggingface.co/Tongyi-MAI/Z-Image-Turbo"
+endpoint_aliases = ["Tongyi-MAI/Z-Image-Turbo"]
+live_endpoint_verified = true

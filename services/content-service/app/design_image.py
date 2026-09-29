@@ -1,4 +1,4 @@
-"""Необязательная иллюстрация FLUX.1-schnell через настроенный HF-compatible API."""
+"""Иллюстрация Z-Image-Turbo через HF/fal с существующим ключом LLM."""
 
 from __future__ import annotations
 
@@ -13,6 +13,15 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
+from app.chains.hf_images import (
+    IMAGE_ENDPOINT,
+    ImageGenerationError,
+    ImageSettings,
+    describe_scene,
+)
+from app.chains.hf_images import (
+    generate_image as generate_hf_image,
+)
 from app.config import settings
 from app.design_config import model_for_role, role_config, role_metadata, role_prompt
 from PIL import Image
@@ -96,7 +105,7 @@ async def generate_image(
         model = model_for_role("image_illustrator", settings.image_model)
         config = role_config("image_illustrator")
         endpoint = _endpoint()
-        if not settings.image_api_key.strip():
+        if endpoint != IMAGE_ENDPOINT and not settings.image_api_key.strip():
             raise ValueError("Не настроен IMAGE_API_KEY")
         prompt = role_prompt("image_illustrator").replace("{payload}", json.dumps({
             "topic": request.prompt, "palette": request.palette,
@@ -113,18 +122,32 @@ async def generate_image(
         timeout = min(settings.image_api_timeout, config["timeout_seconds"])
         if client is None:
             client = httpx.AsyncClient(timeout=timeout, verify=True, follow_redirects=False)
-        async with asyncio.timeout(timeout):
-            async with client.stream(
-                "POST", endpoint, json=payload,
-                headers={"Authorization": f"Bearer {settings.image_api_key}"},
-            ) as response:
-                response.raise_for_status()
-                data = bytearray()
-                async for chunk in response.aiter_bytes():
-                    data.extend(chunk)
-                    if len(data) > MAX_IMAGE_BYTES:
-                        raise ValueError("Слишком большой ответ генератора изображений")
-        raw = bytes(data)
+        if endpoint == IMAGE_ENDPOINT:
+            hf_settings = ImageSettings(
+                _env_file=None,
+                llm_api_key=settings.image_api_key or settings.llm_api_key,
+                llm_base_url=settings.llm_base_url,
+                llm_fast_model=settings.llm_fast_model,
+                image_api_timeout=timeout,
+            )
+            prompt = await describe_scene(client, hf_settings, prompt)
+            raw = await generate_hf_image(
+                client, hf_settings, prompt=prompt, width=request.width,
+                height=request.height, seed=request.seed,
+            )
+        else:
+            async with asyncio.timeout(timeout):
+                async with client.stream(
+                    "POST", endpoint, json=payload,
+                    headers={"Authorization": f"Bearer {settings.image_api_key}"},
+                ) as response:
+                    response.raise_for_status()
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        data.extend(chunk)
+                        if len(data) > MAX_IMAGE_BYTES:
+                            raise ValueError("Слишком большой ответ генератора изображений")
+            raw = bytes(data)
         extension, width, height = await asyncio.to_thread(_image_info, raw)
         output.parent.mkdir(parents=True, exist_ok=True)
         image_path = output.with_name(f"{output.stem}.{uuid4().hex}.image.{extension}")
@@ -138,6 +161,7 @@ async def generate_image(
         )
     except (
         ValueError, OSError, SyntaxError, httpx.HTTPError, TimeoutError, Image.DecompressionBombError,
+        ImageGenerationError,
     ):
         # Ответ провайдера, URL, токен и текст промпта не попадают в публичную ошибку.
         return ImageResult(status="failed", error="image_generation_failed")

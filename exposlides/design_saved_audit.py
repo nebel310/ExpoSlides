@@ -16,7 +16,10 @@ from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from pptx.oxml.ns import qn
 from pptx.oxml.xmlchemy import OxmlElement
 
+from exposlides.design_data import cell_text
 from exposlides.design_models import AuditIssue, AuditReport, DeckPlan, TemplateProfile
+from exposlides.design_pptx_parts import _prune_custom_show_actions
+from exposlides.design_repetition import repeated_content_images
 
 REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 DGM = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
@@ -48,7 +51,9 @@ def _shape_signature(shape, ancestors):
     links = []
     for element in shape._element.iter():
         for key, value in element.attrib.items():
-            if key.startswith("{"+REL_NS+"}"):
+            if key.startswith("{"+REL_NS+"}") and value:
+                # Пустой r:id допустим у встроенных действий PowerPoint.
+                # Сам атрибут остаётся в XML-сигнатуре для сравнения.
                 relation = shape.part.rels[value]
                 target = relation.target_ref if relation.is_external else (
                     relation.reltype if relation.reltype in STRUCTURAL_RELATIONS
@@ -66,10 +71,6 @@ def _shapes(shapes, ancestors=()):
             transform = _xml(shape._element.find(qn("p:grpSpPr")))
             result.update(_shapes(shape.shapes, (*ancestors, transform)))
     return result
-
-
-def _cell(value):
-    return format(value, "g") if isinstance(value, float) else str(value)
 
 
 def _font_matches(font, style):
@@ -91,8 +92,12 @@ def _native_shape_format(shape):
     return _xml(element)
 
 
-def _paragraph_format(paragraph, ratio=1.0):
+def _paragraph_format(paragraph, ratio=1.0, *, plain_margin=None):
     element = deepcopy(paragraph._p)
+    if plain_margin is not None:
+        properties = element.get_or_add_pPr()
+        properties.set("marL", str(plain_margin))
+        properties.set("indent", "0")
     for child in list(element):
         if child.tag in {qn("a:r"), qn("a:fld"), qn("a:br")}:
             element.remove(child)
@@ -117,11 +122,50 @@ def _run_format(run, *, size=None):
     return _xml(element)
 
 
+def _contrast_reference(shape, original, fallback):
+    """Ожидаемая коррекция исходного оформления в окружении итогового слайда."""
+    from exposlides.design_builder import _color_on_fill, _template_palette
+    from exposlides.design_contrast import repair_text_contrast
+
+    expected = type(shape)(deepcopy(original._element), shape._parent)
+    for paragraph in expected.text_frame.paragraphs:
+        if not any(child.tag in {qn("a:r"), qn("a:fld")} for child in paragraph._p):
+            paragraph.add_run()
+    parent = shape._element.getparent()
+    parent.replace(shape._element, expected._element)
+    try:
+        palette = _template_palette(shape.part.slide, "FFFFFF")
+        repair_text_contrast(shape.part.slide, expected, fallback,
+                             lambda fill, color: _color_on_fill(palette, fill, color))
+    finally:
+        parent.replace(expected._element, shape._element)
+    return expected
+
+
+def _contrast_style(shape, style):
+    from exposlides.design_builder import _color_on_fill, _template_palette
+    from exposlides.design_contrast import _behind, _theme
+
+    slide = shape.part.slide
+    theme, mapping = _theme(slide)
+    background = _behind(slide, shape, theme, mapping)
+    if background is None:
+        return style  # Сборщик обязан был добавить подложку.
+    return style.model_copy(update={
+        "color": _color_on_fill(_template_palette(slide, "FFFFFF"), background, style.color),
+    })
+
+
 def _native_text_matches(shape, original, block):
     # Разрешение унаследованного кегля общее со сборщиком; само сравнение
     # форматирования независимое и не пересоздаёт текст через его writer.
-    from exposlides.design_native_text import native_reference_size, native_run_size
+    from exposlides.design_native_text import (
+        native_plain_text_margin,
+        native_reference_size,
+        native_run_size,
+    )
 
+    original = _contrast_reference(shape, original, block.style.color)
     if _native_shape_format(shape) != _native_shape_format(original):
         return False
     body, old_body = shape.text_frame._txBody, original.text_frame._txBody
@@ -135,7 +179,8 @@ def _native_text_matches(shape, original, block):
     prototypes = original.text_frame.paragraphs
     for index, paragraph in enumerate(shape.text_frame.paragraphs):
         prototype = prototypes[min(index, len(prototypes)-1)]
-        if _paragraph_format(paragraph) != _paragraph_format(prototype, ratio):
+        margin = native_plain_text_margin(original, prototype) if block.kind == "text" else None
+        if _paragraph_format(paragraph) != _paragraph_format(prototype, ratio, plain_margin=margin):
             return False
         runs = [child for child in paragraph._p if child.tag in {qn("a:r"), qn("a:fld")}]
         old_runs = [child for child in prototype._p if child.tag in {qn("a:r"), qn("a:fld")}]
@@ -150,15 +195,50 @@ def _native_text_matches(shape, original, block):
     return True
 
 
+def _photo_format(element):
+    element = deepcopy(element)
+    for node in element.iter(qn("a:blip")):
+        node.set(qn("r:embed"), "native-photo")
+    for node in list(element.iter(qn("a:srcRect"))):
+        node.getparent().remove(node)
+    return element
+
+
+def _layer_signature(part, image_ids=(), *, master=False):
+    """Разрешены только заявленные фото и реестр изолированного layout/master."""
+    element = deepcopy(part._element)
+    if master:
+        listing = element.find(qn("p:sldLayoutIdLst"))
+        if listing is not None:
+            element.remove(listing)
+    for picture in list(element.iter(qn("p:pic"))):
+        identity = picture.find("./" + qn("p:nvPicPr") + "/" + qn("p:cNvPr"))
+        if identity is not None and int(identity.get("id")) in image_ids:
+            picture.getparent().replace(picture, _photo_format(picture))
+    links = []
+    for node in element.iter():
+        for key, value in node.attrib.items():
+            if key.startswith("{" + REL_NS + "}") and value != "native-photo":
+                relation = part.rels[value]
+                target = relation.target_ref if relation.is_external else _part_signature(relation.target_part)
+                links.append((value, relation.reltype, target))
+    themes = [_part_signature(rel.target_part) for rel in part.rels.values() if rel.reltype == RT.THEME]
+    return _xml(element), tuple(sorted(links)), tuple(themes)
+
+
 def audit_saved_pptx(output: Path, template: Path, plan: DeckPlan,
                      profile: TemplateProfile) -> AuditReport:
     """Сопоставить редактируемые объекты сохранённого файла с подтверждённым планом."""
     result, source = Presentation(output), Presentation(template)
+    # Builder удаляет только действия исходных custom shows. Нормализуем
+    # эталон в памяти, чтобы разрешённое удаление не считалось порчей оформления.
+    # Готовый файл не нормализуем: новые действия и остальные изменения — ошибка.
+    _prune_custom_show_actions(source)
     if len(result.slides) != len(plan.slides):
         raise ValueError("Число сохранённых слайдов не совпадает с планом")
     patterns = {pattern.source_slide_index: pattern for pattern in profile.patterns}
     datasets = {dataset.id: dataset for dataset in plan.datasets}
-    issues = []
+    issues = repeated_content_images(output, plan, profile)
 
     def issue(rule, instance, block, message, discriminator=""):
         identity = f"{rule}:{instance.id}:{block.id if block else 'slide'}:{discriminator}"
@@ -173,13 +253,34 @@ def audit_saved_pptx(output: Path, template: Path, plan: DeckPlan,
         slide, original = result.slides[index], source.slides[instance.source_slide_index-1]
         actual, old = _shapes(slide.shapes), _shapes(original.shapes)
         layout, original_layout = slide.slide_layout, original.slide_layout
-        if (_xml(layout._element) != _xml(original_layout._element)
-                or _part_signature(layout.slide_master.part) != _part_signature(original_layout.slide_master.part)
-                or _part_signature(layout.part) != _part_signature(original_layout.part)):
+        pattern = patterns[instance.source_slide_index]
+        layout_image_ids = {block.source_shape_id for block in instance.blocks
+                            if block.kind == "image" and block.image_fit == "template"
+                            and block.source_layer == "layout"}
+        if not layout_image_ids.issubset(pattern.layout_images):
+            issue("source_shape_binding", instance, None, "Фото макета не разрешено к замене")
+        if (_layer_signature(layout.part, layout_image_ids) != _layer_signature(original_layout.part, layout_image_ids)
+                or _layer_signature(layout.slide_master.part, master=True)
+                != _layer_signature(original_layout.slide_master.part, master=True)):
             issue("template_layout", instance, None, "Изменены макет, мастер или тема шаблона")
         if _xml(slide._element.cSld.find(qn("p:bg"))) != _xml(original._element.cSld.find(qn("p:bg"))):
             issue("template_background", instance, None, "Изменён фон исходного образца")
-        for shape_id in patterns[instance.source_slide_index].protected_shape_ids:
+        pattern = patterns[instance.source_slide_index]
+        for shape_id in pattern.protected_shape_ids:
+            if shape_id in pattern.replaceable_images and any(
+                block.kind == "image" and block.image_fit == "template"
+                and block.source_layer == "slide" and block.source_shape_id == shape_id
+                for block in instance.blocks
+            ):
+                continue  # Байты и маска нативного фото проверяются ниже.
+            if (shape_id in pattern.replaceable_images and shape_id in instance.remove_shape_ids
+                    and any(b.kind == "image" for b in instance.blocks)):
+                # Новый image проверяется ниже по байтам и геометрии; старая фотография
+                # должна исчезнуть. Логотипы не входят в replaceable_images.
+                if (shape_id in actual and shape_id in old
+                        and _shape_signature(*actual[shape_id]) == _shape_signature(*old[shape_id])):
+                    issue("old_image_retained", instance, None, "Сохранена заменяемая фотография")
+                continue
             if (shape_id not in actual or shape_id not in old
                     or _shape_signature(*actual[shape_id]) != _shape_signature(*old[shape_id])):
                 issue("protected_changed", instance, None,
@@ -191,15 +292,19 @@ def audit_saved_pptx(output: Path, template: Path, plan: DeckPlan,
                              if block.kind in {"title", "text", "page_number"}
                              and block.source_shape_id is not None)
         for block in instance.blocks:
-            native = block.kind in {"title", "text", "page_number"} and (
+            native_image = block.kind == "image" and block.image_fit == "template"
+            native = (block.kind in {"title", "text", "page_number"} and (
                 block.source_shape_id is not None
-            )
-            if native and native_ids[block.source_shape_id] != 1:
+            )) or native_image
+            saved_shapes, source_shapes = actual, old
+            if native_image and block.source_layer == "layout":
+                saved_shapes, source_shapes = _shapes(layout.shapes), _shapes(original_layout.shapes)
+            if native and not native_image and native_ids[block.source_shape_id] != 1:
                 issue("source_shape_binding", instance, block,
                       "Исходная фигура связана с несколькими блоками")
-            source_shape = old.get(block.source_shape_id) if native else None
-            matches = ([actual[block.source_shape_id]]
-                       if native and source_shape and block.source_shape_id in actual
+            source_shape = source_shapes.get(block.source_shape_id) if native else None
+            matches = ([saved_shapes[block.source_shape_id]]
+                       if native and source_shape and block.source_shape_id in saved_shapes
                        else [] if native else by_name.get("exposlides:"+block.id, []))
             if len(matches) != 1:
                 issue("native_object_missing", instance, block,
@@ -207,14 +312,21 @@ def audit_saved_pptx(output: Path, template: Path, plan: DeckPlan,
                 continue
             shape, ancestors = matches[0]
             expected_box = (block.box.left, block.box.top, block.box.width, block.box.height)
-            if block.kind == "image" and shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+            if block.kind == "image" and shape._element.tag == qn("p:pic"):
                 width, height = shape.image.size
                 scale = min(block.box.width/width, block.box.height/height)
                 fitted = max(1, round(width*scale)), max(1, round(height*scale))
                 expected_box = (block.box.left+(block.box.width-fitted[0])//2,
                                 block.box.top+(block.box.height-fitted[1])//2, *fitted)
-                if abs((shape.width/shape.height)/(width/height)-1) > 0.02:
+                visible_width = width * (1 - shape.crop_left - shape.crop_right) if native_image else width
+                visible_height = height * (1 - shape.crop_top - shape.crop_bottom) if native_image else height
+                target_ratio = block.box.width / block.box.height if native_image else shape.width / shape.height
+                if visible_width <= 0 or visible_height <= 0 or abs(
+                    target_ratio / (visible_width / visible_height) - 1
+                ) > 0.02:
                     issue("image_aspect", instance, block, "Пропорции изображения изменены")
+                if native_image and _xml(_photo_format(shape._element)) != _xml(_photo_format(source_shape[0]._element)):
+                    issue("native_image_mask", instance, block, "Изменена форма или оформление исходной фотографии")
                 image_path = Path(block.image_path)
                 if not image_path.is_file() or shape.image.blob != image_path.read_bytes():
                     issue("image_content", instance, block, "Изображение отличается от выбранного файла")
@@ -243,7 +355,7 @@ def audit_saved_pptx(output: Path, template: Path, plan: DeckPlan,
                 matches_style = (_native_text_matches(shape, original_shape, block)
                                  if native and original_shape.has_text_frame else
                                  not native and runs and all(
-                                     _font_matches(run.font, block.style) for run in runs))
+                                     _font_matches(run.font, _contrast_style(shape, block.style)) for run in runs))
                 if not matches_style:
                     issue("saved_text_style", instance, block, "Шрифт, размер, начертание или цвет отличается от плана")
             elif block.kind == "table":
@@ -251,7 +363,7 @@ def audit_saved_pptx(output: Path, template: Path, plan: DeckPlan,
                     issue("native_table", instance, block, "Таблица не является редактируемой таблицей")
                     continue
                 dataset = datasets[block.dataset_id]
-                expected = [[_cell(value) for value in row] for row in [dataset.columns, *dataset.rows]]
+                expected = [[cell_text(value) for value in row] for row in [dataset.columns, *dataset.rows]]
                 saved = [[cell.text for cell in row.cells] for row in shape.table.rows]
                 if expected != saved:
                     issue("saved_data", instance, block, "Ячейки таблицы отличаются от исходных данных")
@@ -268,7 +380,7 @@ def audit_saved_pptx(output: Path, template: Path, plan: DeckPlan,
                                    for column in range(1, len(dataset.columns))]
                 saved_values = [list(series.values) for series in chart.series]
                 categories = [category.label for category in chart.plots[0].categories]
-                if (categories != [_cell(row[0]) for row in dataset.rows]
+                if (categories != [cell_text(row[0]) for row in dataset.rows]
                         or [series.name for series in chart.series] != dataset.columns[1:]
                         or len(saved_values) != len(expected_values)
                         or any(len(saved) != len(expected) or any(
@@ -286,7 +398,7 @@ def audit_saved_pptx(output: Path, template: Path, plan: DeckPlan,
                         valid = False
                     if not valid:
                         issue("chart_labels", instance, block, "Названия осей отличаются от исходных данных")
-            elif block.kind == "image" and shape.shape_type != MSO_SHAPE_TYPE.PICTURE:
+            elif block.kind == "image" and shape._element.tag != qn("p:pic"):
                 issue("native_image", instance, block, "Изображение отсутствует в сохранённом файле")
             elif block.kind in {"process", "comparison"}:
                 if shape.shape_type != MSO_SHAPE_TYPE.GROUP:
@@ -313,6 +425,6 @@ def audit_saved_pptx(output: Path, template: Path, plan: DeckPlan,
         "pptx_reopen", "native_text", "native_table", "native_chart", "native_object_missing",
         "template_layout", "template_background", "protected_changed", "chart_labels", "image_aspect",
         "saved_geometry", "saved_text", "saved_text_style", "saved_data", "image_content",
-        "native_image", "native_diagram", "native_smartart", "native_icon",
+        "native_image", "native_image_mask", "native_diagram", "native_smartart", "native_icon",
         "source_shape_binding", "native_template_text_format",
     ])

@@ -8,12 +8,17 @@
     "typecheck": "tsc --noEmit",
     "test": "node test.mjs"
   },
-  "dependencies": { "react": "19.2.3", "react-dom": "19.2.3" },
+  "dependencies": {
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
   "devDependencies": {
+    "@types/jsdom": "21.1.7",
+    "@types/node": "24.12.2",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
-    "@types/node": "24.12.2",
     "esbuild": "0.25.12",
+    "jsdom": "26.1.0",
     "typescript": "5.9.3"
   }
 }
