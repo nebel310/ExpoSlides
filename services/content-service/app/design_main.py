@@ -46,8 +46,9 @@ from exposlides.template_layout import (  # noqa: E402
 )
 
 # Длинный план получаем по частям, сохраняя общий timeout и полную валидацию.
-# Внутри 240-секундной роли оставляем 20 секунд на короткое исправление.
-fast_llm_client = FastLLMClient(stream=True, request_timeout=220)
+# Первый полный ответ на 12 и более слайдов может занимать больше 220 секунд.
+# Внутри 600-секундной роли оставляем 120 секунд на исправление плана.
+fast_llm_client = FastLLMClient(stream=True, request_timeout=480)
 
 PUBLIC_ERROR_MESSAGES = {
     "invalid_response": "Модель вернула некорректный ответ. Попробуйте ещё раз.",

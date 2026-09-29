@@ -40,6 +40,7 @@ from exposlides.template_catalog import prepare_template_catalog, resolve_templa
 from exposlides.template_profile import profile_from_json
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_JOB_TIMEOUT = 900
 
 STORY_ERRORS = {
     "invalid_response": "Модель вернула план в неподходящем формате. Попробуйте ещё раз.",
@@ -85,7 +86,7 @@ class CancelledError(RuntimeError):
 
 
 class DesignPipeline:
-    def __init__(self, directory: Path, *, timeout: float = 300,
+    def __init__(self, directory: Path, *, timeout: float = DEFAULT_JOB_TIMEOUT,
                  cancel: threading.Event | None = None,
                  progress: Callable[[str], None] | None = None):
         self.directory = directory.resolve()

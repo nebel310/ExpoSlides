@@ -23,7 +23,7 @@ def _configs() -> tuple[dict[str, Any], dict[str, Any]]:
 def role_config(role: str) -> dict[str, Any]:
     workflow, _ = _configs()
     config = dict(workflow["roles"][role])
-    maximum_timeout = 240 if role == "story" else 180
+    maximum_timeout = 600 if role == "story" else 180
     if not 1 <= config["attempts"] <= 3 or not 0 < config["timeout_seconds"] <= maximum_timeout:
         raise ValueError("Недопустимые ограничения роли дизайнера")
     return config

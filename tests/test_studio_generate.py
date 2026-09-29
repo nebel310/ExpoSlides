@@ -121,7 +121,7 @@ def test_generate_endpoint_runs_to_completion_without_review_or_further_browser_
         assert len(job["variants"]) == 3
         assert len(pipeline_type.instances) == 1
         assert pipeline_type.instances[0].calls == ["plan", "build"]
-        assert pipeline_type.instances[0].timeout == 300
+        assert pipeline_type.instances[0].timeout == 900
         assert "awaiting_review" not in {status for status, _ in states}
         assert ("running", "building") in states
         assert json.loads((studio.directory(identifier) / "job.json").read_text())["story"] == job["story"]
@@ -145,6 +145,25 @@ def test_legacy_plan_still_waits_for_review_before_build(tmp_path, pipeline_type
 
         studio.build(identifier, ContentPlan.model_validate(job["story"]))
         assert finish(studio, identifier)["status"] == "completed"
+    finally:
+        studio.close()
+
+
+
+def test_build_after_slow_plan_uses_remaining_job_budget(tmp_path, pipeline_type):
+    from exposlides.design_models import ContentPlan
+
+    studio, payload = prepared(tmp_path, pipeline_type)
+    try:
+        identifier = studio.start(payload)["id"]
+        job = finish(studio, identifier)
+        assert job["status"] == "awaiting_review"
+        # Полный ответ пришёл позже старого лимита всей операции (300 секунд).
+        with studio.lock:
+            studio.jobs[identifier]["active_seconds"] = 480
+        studio.build(identifier, ContentPlan.model_validate(job["story"]))
+        assert finish(studio, identifier)["status"] == "completed"
+        assert pipeline_type.instances[-1].timeout == 420
     finally:
         studio.close()
 

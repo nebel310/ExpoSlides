@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from exposlides.design_content import source_excerpts, story_reference_issues, validate_story
 from exposlides.design_models import ContentPlan, DesignRequest, TemplateProfile
 from exposlides.design_pipeline import (
+    DEFAULT_JOB_TIMEOUT,
     ROOT,
     CancelledError,
     DesignContentError,
@@ -303,7 +304,7 @@ class Studio:
                     raise CancelledError()
                 job["status"] = "running"
                 self._save(job)
-                remaining = 300-job["active_seconds"] if operation != "fix" else 120
+                remaining = DEFAULT_JOB_TIMEOUT-job["active_seconds"] if operation != "fix" else 120
             if remaining <= 0:
                 raise TimeoutError("Общий лимит генерации исчерпан")
 

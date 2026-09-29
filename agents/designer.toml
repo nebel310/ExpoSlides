@@ -1,6 +1,6 @@
 schema_version = "1.0"
 id = "designer"
-version = "1.2.0"
+version = "1.2.1"
 description = "Один проверенный план содержания, три варианта верстки, отдельный аудит."
 
 [roles.story]
@@ -8,7 +8,7 @@ model = "qwen_3_8_27b"
 task = "text"
 prompt = "prompts/designer/story.md"
 attempts = 3
-timeout_seconds = 240
+timeout_seconds = 600
 
 [roles.story.prompts]
 correction = "prompts/designer/story_correction.md"

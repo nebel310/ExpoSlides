@@ -14,7 +14,7 @@ def test_versioned_role_has_external_prompt_and_approved_model(service_importer,
     assert model["parameters_billions"] <= (20 if role == "image_illustrator" else 35)
     assert "{payload}" in config.role_prompt(role)
     metadata = config.role_metadata(role)
-    assert metadata["workflow_version"] == "1.2.0"
+    assert metadata["workflow_version"] == "1.2.1"
     assert len(metadata["prompt_sha256"]) == 64
 
 
@@ -39,7 +39,7 @@ def test_image_role_rejects_registry_entries_outside_competition_constraints(
 
 
 @pytest.mark.parametrize('role,timeout,allowed', [
-    ('story', 240, True), ('story', 241, False),
+    ('story', 600, True), ('story', 601, False),
     ('contextual_auditor', 181, False), ('image_illustrator', 181, False),
 ])
 def test_story_budget_keeps_a_reserve_inside_total_job_limit(
@@ -50,7 +50,7 @@ def test_story_budget_keeps_a_reserve_inside_total_job_limit(
     workflow['roles'][role]['timeout_seconds'] = timeout
     monkeypatch.setattr(config, '_configs', lambda: (workflow, registry))
     if allowed:
-        assert config.role_config(role)['timeout_seconds'] <= 240
+        assert config.role_config(role)['timeout_seconds'] <= 600
     else:
         with pytest.raises(ValueError):
             config.role_config(role)
@@ -68,3 +68,15 @@ def test_named_repair_prompts_share_role_path_restrictions(service_importer, mon
     monkeypatch.setattr(config, "_configs", lambda: (workflow, registry))
     with pytest.raises(ValueError, match="внутри репозитория"):
         config.role_prompt("story", "correction")
+
+
+def test_story_timeouts_leave_time_for_repair_and_export(service_importer, tmp_path):
+    from exposlides.design_pipeline import DEFAULT_JOB_TIMEOUT, DesignPipeline
+
+    module = service_importer(CONTENT_SERVICE_ROOT, "app.design_main")
+    request_limit = module.fast_llm_client._request_timeout
+    story_limit = module.role_config("story")["timeout_seconds"]
+    assert request_limit == 480
+    assert story_limit - request_limit >= 120
+    assert DEFAULT_JOB_TIMEOUT - story_limit >= 300
+    assert DesignPipeline(tmp_path).timeout == DEFAULT_JOB_TIMEOUT
