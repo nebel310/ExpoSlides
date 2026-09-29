@@ -101,7 +101,8 @@ test("saved plan can be edited and built, audit fixes submit only selected issue
       profile: { width: 1000, height: 500, patterns: [], warnings: [] },
       variants: [{ id: "story", name: "История", revision: path.endsWith("/fix") ? 2 : 1,
         issues: path.endsWith("/fix") ? [] : [issue, { ...issue, id: "manual", fix: "none", message: "Проверьте смысл" }],
-        preview_urls: ["/slide.png"], exports: { pptx: "/presentation.pptx" }, contextual_status: "not_run" }] };
+        preview_urls: ["/slide.png"], exports: { pptx: "/presentation.pptx" }, contextual_status: "not_run",
+        limitations: ["Техническое ограничение: endpoint с поддержкой изображений"] }] };
     return saved;
   }) as typeof api.post;
   const { createRoot } = await import("react-dom/client");
@@ -118,7 +119,9 @@ test("saved plan can be edited and built, audit fixes submit only selected issue
     await act(async () => button("Собрать три варианта").click());
     assert.equal(calls[0].path, "/api/design/jobs/test-job/build");
     assert.equal(calls[0].body.story.slides[0].title, "Выбор книг");
-    assert.match(dom.window.document.body.textContent!, /Проверка моделью не выполнялась/);
+    assert.doesNotMatch(dom.window.document.body.textContent!, /моделью|endpoint|Техническое ограничение/);
+    assert.match(dom.window.document.body.textContent!, /Текст не помещается/);
+    assert.match(dom.window.document.body.textContent!, /Проверьте смысл/);
     const check = dom.window.document.querySelector<HTMLInputElement>('.workflow-issue input[type="checkbox"]')!;
     assert.equal(dom.window.document.querySelectorAll('.workflow-issue input').length, 1);
     await act(async () => check.click());
@@ -126,7 +129,8 @@ test("saved plan can be edited and built, audit fixes submit only selected issue
     await act(async () => button("Исправить выбранное").click());
     assert.deepEqual(calls[1], { path: "/api/design/jobs/test-job/variants/story/fix", body: { revision: 1, issue_ids: ["fit"] } });
     assert.match(dom.window.document.body.textContent!, /версия 2/);
-    assert.equal(button("Исправить выбранное").disabled, true);
+    assert.equal(button("Исправить выбранное"), undefined);
+    assert.match(dom.window.document.body.textContent!, /Замечаний нет/);
   } finally {
     await act(async () => root.unmount()); api.get = oldGet; api.post = oldPost; dom.window.close();
     for (const [key, descriptor] of original) {

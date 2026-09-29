@@ -42,7 +42,6 @@ Thumbs.db
 output.json
 *.json
 *.txt
-!TODO.txt
 !evals/generation_cases.json
 *.txt
 **/*_pb2.py

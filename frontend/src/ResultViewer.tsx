@@ -121,12 +121,7 @@ export function ResultViewer({ job, busy = false, onFix }: { job: Job; busy?: bo
     </div>
     {onFix && <details className="workflow-audit" onToggle={event => setAuditOpen(event.currentTarget.open)}>
       <summary>Проверка качества · {issues.length} замечаний · версия {variant.revision}</summary>
-      <p>{(variant.contextual_status ?? variant.audit?.contextual_status) === "completed"
-        ? "Проверка содержания и оформления моделью выполнена."
-        : (variant.contextual_status ?? variant.audit?.contextual_status) === "failed"
-          ? "Проверка моделью не завершена. Ниже — результаты доступных проверок."
-          : "Проверка моделью не выполнялась. Ниже — результаты проверок по правилам."}</p>
-      {!issues.length && <p>В выполненных проверках замечаний нет.</p>}
+      {!issues.length && <p>Замечаний нет.</p>}
       {issues.map(issue => <article className="workflow-issue" key={issue.id}>
         <button type="button" className="text-button" onClick={() => {
           setFocused(issue.id);
@@ -136,10 +131,11 @@ export function ResultViewer({ job, busy = false, onFix }: { job: Job; busy?: bo
           onChange={() => setSelected(old => { const next = new Set(old); next.has(issue.id) ? next.delete(issue.id) : next.add(issue.id); return next; })} /> Исправить</label>
           : <p>Требуется ручная проверка или правка.</p>}
       </article>)}
-      {(variant.limitations ?? variant.audit?.limitations ?? []).map((text, index) => <p key={index}>{text}</p>)}
-      <button type="button" className="primary" disabled={busy || !fixes.length || job.status !== "completed"}
-        onClick={() => void onFix(variant, fixes)}>Исправить выбранное ({fixes.length})</button>
-      <p>Будет создана новая версия. Предыдущие файлы сохранятся.</p>
+      {issues.some(canFix) && <>
+        <button type="button" className="primary" disabled={busy || !fixes.length || job.status !== "completed"}
+          onClick={() => void onFix(variant, fixes)}>Исправить выбранное ({fixes.length})</button>
+        <p>Будет создана новая версия. Предыдущие файлы сохранятся.</p>
+      </>}
       {variant.revision > 1 && <details><summary>Предыдущие версии</summary>
         {Array.from({ length: variant.revision - 1 }, (_, index) => index + 1).map(revision => <div key={revision}>
           <span>Версия {revision}: </span>{Object.entries(variant.exports).map(([format, url]) =>
